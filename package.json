@@ -1,1 +1,32 @@
-{"name":"megazen","version":"0.2.0","private":true,"packageManager":"pnpm@9.15.5","scripts":{"dev":"turbo dev","build":"turbo build","typecheck":"turbo typecheck","lint":"turbo lint","db:generate":"pnpm --filter @megazen/api prisma:generate","db:migrate":"pnpm --filter @megazen/api prisma:migrate","db:seed":"pnpm --filter @megazen/api prisma:seed"},"devDependencies":{"turbo":"^2.3.3","typescript":"^5.7.2"}}
+{
+  "name": "megazen",
+  "version": "1.0.0",
+  "description": "Enterprise Maritime Logistics Platform",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "start": "turbo run start",
+    "lint": "turbo run lint",
+    "type-check": "turbo run type-check",
+    "test": "turbo run test",
+    "db:push": "prisma db push",
+    "db:migrate": "prisma migrate dev",
+    "db:seed": "prisma db seed",
+    "db:studio": "prisma studio"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "prisma": "^5.7.0",
+    "turbo": "^1.10.16",
+    "typescript": "^5.3.3"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}
