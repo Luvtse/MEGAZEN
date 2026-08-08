@@ -1,0 +1,414 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  OPERATIONS
+  DOCUMENTATION
+  FINANCE
+  COMPLIANCE
+  VIEWER
+}
+
+enum ContainerStatus {
+  REGISTERED
+  IN_YARD
+  GATED_OUT
+  LOADED
+  DISCHARGED
+  AVAILABLE
+  RELEASED
+  DELIVERED
+  DAMAGED
+}
+
+enum BookingStatus {
+  DRAFT
+  PENDING_APPROVAL
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum ShipmentStatus {
+  PLANNED
+  BOOKED
+  IN_TRANSIT
+  ARRIVED
+  DELIVERED
+  CANCELLED
+}
+
+enum OrderStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  ISSUED
+  CANCELLED
+  COMPLETED
+}
+
+enum BillOfLadingStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  ISSUED
+  SURRENDERED
+  RELEASED
+  CANCELLED
+}
+
+model Tenant {
+  id            String           @id @default(uuid())
+  name          String
+  code          String           @unique
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  users         User[]
+  customers     Customer[]
+  containers    Container[]
+  bookings      Booking[]
+  shipments     Shipment[]
+  events        ContainerEvent[]
+  releaseOrders  ReleaseOrder[]
+  deliveryOrders DeliveryOrder[]
+  billsOfLading  BillOfLading[]
+  auditLogs      AuditLog[]
+}
+
+model User {
+  id         String   @id @default(uuid())
+  email      String
+  name       String
+  role       UserRole @default(VIEWER)
+  tenantId   String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  eventLogs  EventLog[]
+  auditLogs  AuditLog[] @relation("AuditActor")
+  approvals  Approval[] @relation("ApprovalActor")
+  @@unique([tenantId, email])
+  @@index([tenantId])
+}
+
+model Customer {
+  id            String    @id @default(uuid())
+  name          String
+  code          String
+  contactPerson String?
+  email         String?
+  phone         String?
+  address       String?
+  tenantId      String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bookings      Booking[]
+  billsOfLading BillOfLading[]
+  @@unique([tenantId, code])
+  @@index([tenantId])
+}
+
+model Vessel {
+  id        String    @id @default(uuid())
+  name      String
+  imoNumber String?   @unique
+  operator  String?
+  flag      String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  voyages   Voyage[]
+}
+
+model Voyage {
+  id          String     @id @default(uuid())
+  vesselId    String
+  voyageNumber String
+  origin      String
+  destination String
+  etd         DateTime?
+  eta         DateTime?
+  atd         DateTime?
+  ata         DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  vessel      Vessel     @relation(fields: [vesselId], references: [id])
+  shipments   Shipment[]
+  @@unique([vesselId, voyageNumber])
+}
+
+model Container {
+  id              String          @id @default(uuid())
+  containerNumber String
+  type            String
+  size            String
+  status          ContainerStatus @default(REGISTERED)
+  location        String?
+  yardPosition    String?
+  carrier         String?
+  vessel          String?
+  voyage          String?
+  eta             DateTime?
+  etd             DateTime?
+  tenantId        String
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  events          ContainerEvent[]
+  bookings        Booking[]
+  releaseOrders   ReleaseOrder[]
+  deliveryOrders  DeliveryOrder[]
+  billContainers  BillOfLadingContainer[]
+  @@unique([tenantId, containerNumber])
+  @@index([tenantId, status])
+}
+
+model ContainerEvent {
+  id          String          @id @default(uuid())
+  containerId String
+  status      ContainerStatus
+  location    String?
+  timestamp   DateTime        @default(now())
+  eventData   Json
+  md5Hash     String
+  tenantId    String
+  tenant      Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  container   Container       @relation(fields: [containerId], references: [id], onDelete: Cascade)
+  @@unique([tenantId, md5Hash])
+  @@index([containerId, timestamp])
+}
+
+model Booking {
+  id               String        @id @default(uuid())
+  bookingNumber    String        @unique
+  customerId       String
+  containerId      String?
+  origin           String
+  destination      String
+  cargoDescription String
+  weight           Decimal       @db.Decimal(14, 3)
+  volume           Decimal?      @db.Decimal(14, 3)
+  bookingDate      DateTime      @default(now())
+  status           BookingStatus @default(DRAFT)
+  vgm              Decimal?      @db.Decimal(14, 3)
+  eirNumber        String?
+  eirExpiry        DateTime?
+  tenantId         String
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  tenant           Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer         Customer      @relation(fields: [customerId], references: [id])
+  container        Container?    @relation(fields: [containerId], references: [id])
+  shipment         Shipment?
+  releaseOrders    ReleaseOrder[]
+  deliveryOrders   DeliveryOrder[]
+  billsOfLading    BillOfLading[]
+  @@index([tenantId, status])
+}
+
+model Shipment {
+  id          String         @id @default(uuid())
+  bookingId   String         @unique
+  voyageId    String?
+  vessel      String?
+  voyage      String?
+  blNumber    String?
+  status      ShipmentStatus @default(PLANNED)
+  etd         DateTime?
+  eta         DateTime?
+  atd         DateTime?
+  ata         DateTime?
+  tenantId    String
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking     Booking        @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  voyageRef   Voyage?        @relation(fields: [voyageId], references: [id])
+  @@index([tenantId, status])
+}
+
+model ReleaseOrder {
+  id             String      @id @default(uuid())
+  orderNumber    String      @unique
+  bookingId      String
+  containerId    String?
+  status         OrderStatus @default(DRAFT)
+  issuedAt       DateTime?
+  expiresAt      DateTime?
+  consignee      String
+  deliveryAgent  String?
+  notes          String?
+  tenantId       String
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  tenant         Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking        Booking     @relation(fields: [bookingId], references: [id])
+  container      Container?  @relation(fields: [containerId], references: [id])
+  @@index([tenantId, status])
+}
+
+model DeliveryOrder {
+  id             String      @id @default(uuid())
+  orderNumber    String      @unique
+  bookingId      String
+  containerId    String?
+  status         OrderStatus @default(DRAFT)
+  issuedAt       DateTime?
+  expiresAt      DateTime?
+  consignee      String
+  deliveryAddress String?
+  deliveryAgent  String?
+  notes          String?
+  tenantId       String
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  tenant         Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking        Booking     @relation(fields: [bookingId], references: [id])
+  container      Container?  @relation(fields: [containerId], references: [id])
+  @@index([tenantId, status])
+}
+
+model BillOfLading {
+  id                 String              @id @default(uuid())
+  blNumber           String              @unique
+  bookingId          String
+  customerId         String
+  status             BillOfLadingStatus   @default(DRAFT)
+  documentType       String
+  placeOfReceipt     String
+  portOfLoading      String
+  portOfDischarge    String
+  placeOfDelivery    String?
+  shipperName        String
+  shipperAddress     String
+  consigneeName      String
+  consigneeAddress   String
+  notifyPartyName    String?
+  notifyPartyAddress String?
+  vesselName         String?
+  voyageNumber       String?
+  issuePlace         String
+  issueDate          DateTime
+  numberOfOriginals  Int                 @default(3)
+  freightTerms       String?
+  marksAndNumbers    String?
+  description        String
+  grossWeight        Decimal?            @db.Decimal(14, 3)
+  measurement        Decimal?            @db.Decimal(14, 3)
+  packageCount       Int?
+  currency           String?
+  declaredValue      Decimal?            @db.Decimal(16, 2)
+  termsText          String?
+  verificationCode   String              @unique
+  documentHash       String?
+  version            Int                 @default(1)
+  tenantId           String
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking            Booking             @relation(fields: [bookingId], references: [id])
+  customer            Customer            @relation(fields: [customerId], references: [id])
+  containers         BillOfLadingContainer[]
+  revisions          BillOfLadingRevision[]
+  approvals          Approval[]
+  @@index([tenantId, status])
+}
+
+model BillOfLadingContainer {
+  id            String       @id @default(uuid())
+  billOfLadingId String
+  containerId   String
+  sealNumber    String?
+  packageCount  Int?
+  packageType   String?
+  grossWeight   Decimal?     @db.Decimal(14, 3)
+  measurement   Decimal?     @db.Decimal(14, 3)
+  billOfLading  BillOfLading @relation(fields: [billOfLadingId], references: [id], onDelete: Cascade)
+  container     Container    @relation(fields: [containerId], references: [id])
+  @@unique([billOfLadingId, containerId])
+}
+
+model BillOfLadingRevision {
+  id            String       @id @default(uuid())
+  billOfLadingId String
+  version       Int
+  snapshot      Json
+  changedBy     String?
+  reason        String?
+  createdAt     DateTime     @default(now())
+  billOfLading  BillOfLading @relation(fields: [billOfLadingId], references: [id], onDelete: Cascade)
+  @@unique([billOfLadingId, version])
+}
+
+model Approval {
+  id            String        @id @default(uuid())
+  entityType    String
+  entityId      String
+  status        String
+  actorId       String?
+  comment       String?
+  createdAt     DateTime      @default(now())
+  actor         User?         @relation("ApprovalActor", fields: [actorId], references: [id], onDelete: SetNull)
+  billOfLading  BillOfLading? @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  @@index([entityType, entityId])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  tenantId    String
+  entityType  String
+  entityId    String
+  action      String
+  actorId     String?
+  data        Json
+  timestamp   DateTime @default(now())
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actor       User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  @@index([tenantId, entityType, entityId])
+}
+
+model EventLog {
+  id         String   @id @default(uuid())
+  entityType String
+  entityId   String
+  action     String
+  userId     String?
+  data       Json
+  timestamp  DateTime @default(now())
+  tenantId   String
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  @@index([tenantId, entityType, entityId])
+}
+
+model EDIIngestion {
+  id         String   @id @default(uuid())
+  source     String
+  type       String
+  payload    String
+  parsedData Json?
+  status     String
+  md5Hash    String
+  tenantId   String
+  createdAt  DateTime @default(now())
+  @@unique([tenantId, md5Hash])
+  @@index([tenantId, status])
+}
+
+model YardSlot {
+  id          String  @id @default(uuid())
+  block       String
+  bay         Int
+  row         Int
+  tier        Int
+  status      String
+  containerId String?
+  tenantId    String
+  @@index([tenantId, block, bay, row, tier])
+}
