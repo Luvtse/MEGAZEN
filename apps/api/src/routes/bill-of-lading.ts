@@ -1,13 +1,18 @@
 import { Router } from "express";
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { ok } from "../lib/response.js";
-import { createVerificationCode, createDocumentNumber } from "../utils/numbering.js";
-import { z } from "zod";
+import {
+  createDocumentNumber,
+  createVerificationCode
+} from "../utils/numbering.js";
+
+const uuidSchema = z.string().uuid();
 
 const billOfLadingSchema = z.object({
-  bookingId: z.string().uuid(),
-  customerId: z.string().uuid(),
+  bookingId: uuidSchema,
+  customerId: uuidSchema,
   documentType: z.string().trim().min(2).max(50).default("ORIGINAL"),
   placeOfReceipt: z.string().trim().min(2),
   portOfLoading: z.string().trim().min(2),
@@ -32,61 +37,150 @@ const billOfLadingSchema = z.object({
   currency: z.string().length(3).optional(),
   declaredValue: z.number().nonnegative().optional(),
   termsText: z.string().trim().optional(),
-  containerIds: z.array(z.string().uuid()).default([])
+  containerIds: z.array(uuidSchema).default([])
+});
+
+const updateBillOfLadingSchema = billOfLadingSchema
+  .omit({
+    bookingId: true,
+    customerId: true,
+    containerIds: true
+  })
+  .partial();
+
+const containerSchema = z.object({
+  containerId: uuidSchema,
+  sealNumber: z.string().trim().max(50).optional(),
+  packageCount: z.number().int().nonnegative().optional(),
+  packageType: z.string().trim().max(100).optional(),
+  grossWeight: z.number().nonnegative().optional(),
+  measurement: z.number().nonnegative().optional()
+});
+
+const updateContainerSchema = containerSchema.omit({
+  containerId: true
+}).partial();
+
+const revisionSchema = z.object({
+  reason: z.string().trim().min(3).max(500)
 });
 
 export const billOfLadingRouter = Router();
 
+/**
+ * GET /api/bills-of-lading
+ */
 billOfLadingRouter.get("/", async (req, res, next) => {
   try {
     const documents = await prisma.billOfLading.findMany({
-      where: { tenantId: req.tenantId },
-      include: { customer: true, containers: { include: { container: true } } },
-      orderBy: { updatedAt: "desc" }
+      where: {
+        tenantId: req.tenantId
+      },
+      include: {
+        customer: true,
+        booking: true,
+        containers: {
+          include: {
+            container: true
+          }
+        }
+      },
+      orderBy: {
+        updatedAt: "desc"
+      }
     });
+
     ok(res, documents);
-  } catch (error) { next(error); }
+  } catch (error) {
+    next(error);
+  }
 });
 
+/**
+ * POST /api/bills-of-lading
+ */
 billOfLadingRouter.post("/", async (req, res, next) => {
   try {
     const input = billOfLadingSchema.parse(req.body);
-    const booking = await prisma.booking.findFirstOrThrow({
-      where: { id: input.bookingId, tenantId: req.tenantId }
-    });
+
+    const [booking, customer] = await Promise.all([
+      prisma.booking.findFirstOrThrow({
+        where: {
+          id: input.bookingId,
+          tenantId: req.tenantId
+        }
+      }),
+      prisma.customer.findFirstOrThrow({
+        where: {
+          id: input.customerId,
+          tenantId: req.tenantId
+        }
+      })
+    ]);
 
     const document = await prisma.$transaction(async (tx) => {
+      if (input.containerIds.length > 0) {
+        const containers = await tx.container.findMany({
+          where: {
+            id: {
+              in: input.containerIds
+            },
+            tenantId: req.tenantId
+          },
+          select: {
+            id: true
+          }
+        });
+
+        if (containers.length !== input.containerIds.length) {
+          throw new Error("ONE_OR_MORE_CONTAINERS_NOT_FOUND");
+        }
+      }
+
       const created = await tx.billOfLading.create({
         data: {
           bookingId: booking.id,
-          customerId: input.customerId,
+          customerId: customer.id,
           tenantId: req.tenantId,
+
           blNumber: createDocumentNumber("BL"),
+
           documentType: input.documentType,
           placeOfReceipt: input.placeOfReceipt,
           portOfLoading: input.portOfLoading,
           portOfDischarge: input.portOfDischarge,
           placeOfDelivery: input.placeOfDelivery,
+
           shipperName: input.shipperName,
           shipperAddress: input.shipperAddress,
+
           consigneeName: input.consigneeName,
           consigneeAddress: input.consigneeAddress,
+
           notifyPartyName: input.notifyPartyName,
           notifyPartyAddress: input.notifyPartyAddress,
+
           vesselName: input.vesselName,
           voyageNumber: input.voyageNumber,
+
           issuePlace: input.issuePlace,
           issueDate: new Date(),
+
           numberOfOriginals: input.numberOfOriginals,
           freightTerms: input.freightTerms,
+
           marksAndNumbers: input.marksAndNumbers,
           description: input.description,
+
           grossWeight: input.grossWeight,
           measurement: input.measurement,
           packageCount: input.packageCount,
+
           currency: input.currency,
           declaredValue: input.declaredValue,
+
           termsText: input.termsText,
+
           verificationCode: createVerificationCode()
         }
       });
@@ -115,92 +209,697 @@ billOfLadingRouter.post("/", async (req, res, next) => {
           entityType: "BillOfLading",
           entityId: created.id,
           action: "CREATED",
-          data: { blNumber: created.blNumber }
+          data: {
+            blNumber: created.blNumber,
+            version: created.version
+          }
         }
       });
 
-      return created;
+      return tx.billOfLading.findUniqueOrThrow({
+        where: {
+          id: created.id
+        },
+        include: {
+          customer: true,
+          booking: true,
+          containers: {
+            include: {
+              container: true
+            }
+          }
+        }
+      });
     });
 
     ok(res, document, 201);
-  } catch (error) { next(error); }
+  } catch (error) {
+    next(error);
+  }
 });
 
+/**
+ * GET /api/bills-of-lading/:id
+ */
 billOfLadingRouter.get("/:id", async (req, res, next) => {
   try {
     const document = await prisma.billOfLading.findFirstOrThrow({
-      where: { id: req.params.id, tenantId: req.tenantId },
+      where: {
+        id: req.params.id,
+        tenantId: req.tenantId
+      },
       include: {
         customer: true,
         booking: true,
-        containers: { include: { container: true } },
-        revisions: { orderBy: { version: "desc" } },
-        approvals: { orderBy: { createdAt: "desc" } }
+        containers: {
+          include: {
+            container: true
+          }
+        },
+        revisions: {
+          orderBy: {
+            version: "desc"
+          }
+        },
+        approvals: {
+          orderBy: {
+            createdAt: "desc"
+          }
+        }
       }
     });
+
     ok(res, document);
-  } catch (error) { next(error); }
+  } catch (error) {
+    next(error);
+  }
 });
 
+/**
+ * PUT /api/bills-of-lading/:id
+ *
+ * Only DRAFT documents can be directly edited.
+ */
+billOfLadingRouter.put("/:id", async (req, res, next) => {
+  try {
+    const input = updateBillOfLadingSchema.parse(req.body);
+
+    const document = await prisma.$transaction(async (tx) => {
+      const existing = await tx.billOfLading.findFirstOrThrow({
+        where: {
+          id: req.params.id,
+          tenantId: req.tenantId
+        }
+      });
+
+      if (existing.status !== "DRAFT") {
+        throw new Error("BL_NOT_EDITABLE");
+      }
+
+      const updated = await tx.billOfLading.update({
+        where: {
+          id: existing.id
+        },
+        data: {
+          ...input
+        }
+      });
+
+      await tx.billOfLadingRevision.update({
+        where: {
+          billOfLadingId_version: {
+            billOfLadingId: existing.id,
+            version: existing.version
+          }
+        },
+        data: {
+          snapshot: JSON.parse(JSON.stringify(updated))
+        }
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId: req.tenantId,
+          entityType: "BillOfLading",
+          entityId: existing.id,
+          action: "UPDATED",
+          data: {
+            version: existing.version
+          }
+        }
+      });
+
+      return updated;
+    });
+
+    ok(res, document);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/bills-of-lading/:id/submit
+ */
 billOfLadingRouter.post("/:id/submit", async (req, res, next) => {
   try {
-    const document = await prisma.billOfLading.updateMany({
-      where: { id: req.params.id, tenantId: req.tenantId, status: "DRAFT" },
-      data: { status: "PENDING_APPROVAL", version: { increment: 1 } }
+    const document = await prisma.$transaction(async (tx) => {
+      const existing = await tx.billOfLading.findFirstOrThrow({
+        where: {
+          id: req.params.id,
+          tenantId: req.tenantId
+        }
+      });
+
+      if (existing.status !== "DRAFT") {
+        throw new Error("BL_NOT_DRAFT");
+      }
+
+      const nextVersion = existing.version + 1;
+
+      const updated = await tx.billOfLading.update({
+        where: {
+          id: existing.id
+        },
+        data: {
+          status: "PENDING_APPROVAL",
+          version: nextVersion
+        }
+      });
+
+      await tx.billOfLadingRevision.create({
+        data: {
+          billOfLadingId: existing.id,
+          version: nextVersion,
+          snapshot: JSON.parse(JSON.stringify(updated)),
+          reason: "Submitted for approval"
+        }
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId: req.tenantId,
+          entityType: "BillOfLading",
+          entityId: existing.id,
+          action: "SUBMITTED",
+          data: {
+            version: nextVersion
+          }
+        }
+      });
+
+      return updated;
     });
-    ok(res, { submitted: document.count === 1 });
-  } catch (error) { next(error); }
+
+    ok(res, document);
+  } catch (error) {
+    next(error);
+  }
 });
 
+/**
+ * POST /api/bills-of-lading/:id/approve
+ */
 billOfLadingRouter.post("/:id/approve", async (req, res, next) => {
   try {
+    const comment =
+      typeof req.body?.comment === "string"
+        ? req.body.comment.trim()
+        : null;
+
     const document = await prisma.$transaction(async (tx) => {
-      const updated = await tx.billOfLading.updateMany({
-        where: { id: req.params.id, tenantId: req.tenantId, status: "PENDING_APPROVAL" },
-        data: { status: "APPROVED" }
+      const existing = await tx.billOfLading.findFirstOrThrow({
+        where: {
+          id: req.params.id,
+          tenantId: req.tenantId
+        }
       });
-      if (updated.count !== 1) return null;
+
+      if (existing.status !== "PENDING_APPROVAL") {
+        throw new Error("BL_NOT_PENDING_APPROVAL");
+      }
+
+      const updated = await tx.billOfLading.update({
+        where: {
+          id: existing.id
+        },
+        data: {
+          status: "APPROVED"
+        }
+      });
+
       await tx.approval.create({
         data: {
           entityType: "BillOfLading",
-          entityId: req.params.id,
+          entityId: existing.id,
           status: "APPROVED",
-          comment: typeof req.body?.comment === "string" ? req.body.comment : null
+          comment
         }
       });
-      return tx.billOfLading.findUnique({ where: { id: req.params.id } });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId: req.tenantId,
+          entityType: "BillOfLading",
+          entityId: existing.id,
+          action: "APPROVED",
+          data: {
+            comment
+          }
+        }
+      });
+
+      return updated;
     });
+
     ok(res, document);
-  } catch (error) { next(error); }
+  } catch (error) {
+    next(error);
+  }
 });
 
+/**
+ * POST /api/bills-of-lading/:id/issue
+ */
 billOfLadingRouter.post("/:id/issue", async (req, res, next) => {
   try {
-    const document = await prisma.billOfLading.findFirstOrThrow({
-      where: { id: req.params.id, tenantId: req.tenantId }
-    });
-    if (document.status !== "APPROVED") {
-      res.status(409).json({
-        success: false, data: null,
-        error: { code: "BL_NOT_APPROVED", message: "Bill of Lading must be approved before issue." },
-        timestamp: new Date().toISOString()
+    const document = await prisma.$transaction(async (tx) => {
+      const existing = await tx.billOfLading.findFirstOrThrow({
+        where: {
+          id: req.params.id,
+          tenantId: req.tenantId
+        },
+        include: {
+          containers: {
+            include: {
+              container: true
+            }
+          }
+        }
       });
-      return;
-    }
 
-    const payload = {
-      id: document.id,
-      blNumber: document.blNumber,
-      version: document.version,
-      verificationCode: document.verificationCode,
-      issueDate: document.issueDate.toISOString()
-    };
-    const hash = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+      if (existing.status !== "APPROVED") {
+        throw new Error("BL_NOT_APPROVED");
+      }
 
-    const issued = await prisma.billOfLading.update({
-      where: { id: document.id },
-      data: { status: "ISSUED", documentHash: hash }
+      const payload = {
+        id: existing.id,
+        blNumber: existing.blNumber,
+        version: existing.version,
+        verificationCode: existing.verificationCode,
+        issueDate: existing.issueDate.toISOString(),
+        shipperName: existing.shipperName,
+        consigneeName: existing.consigneeName,
+        portOfLoading: existing.portOfLoading,
+        portOfDischarge: existing.portOfDischarge,
+        description: existing.description,
+        containers: existing.containers
+      };
+
+      const hash = createHash("sha256")
+        .update(JSON.stringify(payload))
+        .digest("hex");
+
+      const issued = await tx.billOfLading.update({
+        where: {
+          id: existing.id
+        },
+        data: {
+          status: "ISSUED",
+          documentHash: hash
+        },
+        include: {
+          containers: {
+            include: {
+              container: true
+            }
+          }
+        }
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId: req.tenantId,
+          entityType: "BillOfLading",
+          entityId: existing.id,
+          action: "ISSUED",
+          data: {
+            version: existing.version,
+            documentHash: hash
+          }
+        }
+      });
+
+      return issued;
     });
-    ok(res, issued);
-  } catch (error) { next(error); }
+
+    ok(res, document);
+  } catch (error) {
+    next(error);
+  }
 });
+
+/**
+ * POST /api/bills-of-lading/:id/release
+ */
+billOfLadingRouter.post("/:id/release", async (req, res, next) => {
+  try {
+    const document = await prisma.$transaction(async (tx) => {
+      const existing = await tx.billOfLading.findFirstOrThrow({
+        where: {
+          id: req.params.id,
+          tenantId: req.tenantId
+        }
+      });
+
+      if (existing.status !== "ISSUED") {
+        throw new Error("BL_NOT_ISSUED");
+      }
+
+      const updated = await tx.billOfLading.update({
+        where: {
+          id: existing.id
+        },
+        data: {
+          status: "RELEASED"
+        }
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId: req.tenantId,
+          entityType: "BillOfLading",
+          entityId: existing.id,
+          action: "RELEASED",
+          data: {
+            version: existing.version
+          }
+        }
+      });
+
+      return updated;
+    });
+
+    ok(res, document);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/bills-of-lading/:id/surrender
+ */
+billOfLadingRouter.post("/:id/surrender", async (req, res, next) => {
+  try {
+    const document = await prisma.$transaction(async (tx) => {
+      const existing = await tx.billOfLading.findFirstOrThrow({
+        where: {
+          id: req.params.id,
+          tenantId: req.tenantId
+        }
+      });
+
+      if (existing.status !== "ISSUED") {
+        throw new Error("BL_NOT_ISSUED");
+      }
+
+      const updated = await tx.billOfLading.update({
+        where: {
+          id: existing.id
+        },
+        data: {
+          status: "SURRENDERED"
+        }
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId: req.tenantId,
+          entityType: "BillOfLading",
+          entityId: existing.id,
+          action: "SURRENDERED",
+          data: {
+            version: existing.version
+          }
+        }
+      });
+
+      return updated;
+    });
+
+    ok(res, document);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/bills-of-lading/:id/amend
+ *
+ * Creates a new controlled revision and returns the B/L to DRAFT.
+ */
+billOfLadingRouter.post("/:id/amend", async (req, res, next) => {
+  try {
+    const input = revisionSchema.parse(req.body);
+
+    const document = await prisma.$transaction(async (tx) => {
+      const existing = await tx.billOfLading.findFirstOrThrow({
+        where: {
+          id: req.params.id,
+          tenantId: req.tenantId
+        },
+        include: {
+          containers: true
+        }
+      });
+
+      if (
+        existing.status === "ISSUED" ||
+        existing.status === "RELEASED" ||
+        existing.status === "SURRENDERED"
+      ) {
+        throw new Error("ISSUED_BL_REQUIRES_CONTROLLED_AMENDMENT");
+      }
+
+      const nextVersion = existing.version + 1;
+
+      const updated = await tx.billOfLading.update({
+        where: {
+          id: existing.id
+        },
+        data: {
+          status: "DRAFT",
+          version: nextVersion,
+          documentHash: null
+        }
+      });
+
+      await tx.billOfLadingRevision.create({
+        data: {
+          billOfLadingId: existing.id,
+          version: nextVersion,
+          snapshot: {
+            previous: JSON.parse(JSON.stringify(existing)),
+            amendment: input.reason
+          },
+          reason: input.reason
+        }
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId: req.tenantId,
+          entityType: "BillOfLading",
+          entityId: existing.id,
+          action: "AMENDMENT_STARTED",
+          data: {
+            previousVersion: existing.version,
+            version: nextVersion,
+            reason: input.reason
+          }
+        }
+      });
+
+      return updated;
+    });
+
+    ok(res, document);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/bills-of-lading/:id/containers
+ */
+billOfLadingRouter.get("/:id/containers", async (req, res, next) => {
+  try {
+    const document = await prisma.billOfLading.findFirstOrThrow({
+      where: {
+        id: req.params.id,
+        tenantId: req.tenantId
+      }
+    });
+
+    const containers = await prisma.billOfLadingContainer.findMany({
+      where: {
+        billOfLadingId: document.id
+      },
+      include: {
+        container: true
+      },
+      orderBy: {
+        id: "asc"
+      }
+    });
+
+    ok(res, containers);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/bills-of-lading/:id/containers
+ */
+billOfLadingRouter.post("/:id/containers", async (req, res, next) => {
+  try {
+    const input = containerSchema.parse(req.body);
+
+    const result = await prisma.$transaction(async (tx) => {
+      const document = await tx.billOfLading.findFirstOrThrow({
+        where: {
+          id: req.params.id,
+          tenantId: req.tenantId
+        }
+      });
+
+      if (document.status !== "DRAFT") {
+        throw new Error("BL_CONTAINERS_LOCKED");
+      }
+
+      const container = await tx.container.findFirstOrThrow({
+        where: {
+          id: input.containerId,
+          tenantId: req.tenantId
+        }
+      });
+
+      const relation = await tx.billOfLadingContainer.create({
+        data: {
+          billOfLadingId: document.id,
+          containerId: container.id,
+          sealNumber: input.sealNumber,
+          packageCount: input.packageCount,
+          packageType: input.packageType,
+          grossWeight: input.grossWeight,
+          measurement: input.measurement
+        },
+        include: {
+          container: true
+        }
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId: req.tenantId,
+          entityType: "BillOfLading",
+          entityId: document.id,
+          action: "CONTAINER_ATTACHED",
+          data: {
+            containerId: container.id,
+            sealNumber: input.sealNumber ?? null
+          }
+        }
+      });
+
+      return relation;
+    });
+
+    ok(res, result, 201);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PUT /api/bills-of-lading/:id/containers/:containerRelationId
+ */
+billOfLadingRouter.put(
+  "/:id/containers/:containerRelationId",
+  async (req, res, next) => {
+    try {
+      const input = updateContainerSchema.parse(req.body);
+
+      const result = await prisma.$transaction(async (tx) => {
+        const document = await tx.billOfLading.findFirstOrThrow({
+          where: {
+            id: req.params.id,
+            tenantId: req.tenantId
+          }
+        });
+
+        if (document.status !== "DRAFT") {
+          throw new Error("BL_CONTAINERS_LOCKED");
+        }
+
+        const relation = await tx.billOfLadingContainer.update({
+          where: {
+            id: req.params.containerRelationId,
+            billOfLadingId: document.id
+          },
+          data: input,
+          include: {
+            container: true
+          }
+        });
+
+        await tx.auditLog.create({
+          data: {
+            tenantId: req.tenantId,
+            entityType: "BillOfLading",
+            entityId: document.id,
+            action: "CONTAINER_UPDATED",
+            data: {
+              relationId: relation.id
+            }
+          }
+        });
+
+        return relation;
+      });
+
+      ok(res, result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * DELETE /api/bills-of-lading/:id/containers/:containerRelationId
+ */
+billOfLadingRouter.delete(
+  "/:id/containers/:containerRelationId",
+  async (req, res, next) => {
+    try {
+      await prisma.$transaction(async (tx) => {
+        const document = await tx.billOfLading.findFirstOrThrow({
+          where: {
+            id: req.params.id,
+            tenantId: req.tenantId
+          }
+        });
+
+        if (document.status !== "DRAFT") {
+          throw new Error("BL_CONTAINERS_LOCKED");
+        }
+
+        await tx.billOfLadingContainer.delete({
+          where: {
+            id: req.params.containerRelationId,
+            billOfLadingId: document.id
+          }
+        });
+
+        await tx.auditLog.create({
+          data: {
+            tenantId: req.tenantId,
+            entityType: "BillOfLading",
+            entityId: document.id,
+            action: "CONTAINER_DETACHED",
+            data: {
+              relationId: req.params.containerRelationId
+            }
+          }
+        });
+      });
+
+      ok(res, {
+        deleted: true
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
