@@ -1,12 +1,16 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { BillOfLadingContainers } from "@/components/bills-of-lading/BillOfLadingContainers";
 
 type Bill={id:string;blNumber:string;status:string;version:number;shipperName:string;consigneeName:string;portOfLoading:string;portOfDischarge:string;verificationCode:string};
 type Container={id:string;containerId:string;sealNumber:string|null;packageCount:number|null;packageType:string|null;grossWeight:string|number|null;measurement:string|number|null;container:{containerNumber:string;type:string;size:string;status:string}};
 const API="http://localhost:4000";
 const TENANT="REPLACE_WITH_TENANT_ID";
-
+<BillOfLadingContainers
+  billOfLadingId={bill.id}
+  editable={bill.status === "DRAFT"}
+/>
 export default function BillDetail({params}:{params:{id:string}}){
  const [bill,setBill]=useState<Bill|null>(null),[containers,setContainers]=useState<Container[]>([]),[message,setMessage]=useState(""),[busy,setBusy]=useState(false);
  const load=async()=>{const r=await fetch(`${API}/api/bills-of-lading/${params.id}`,{headers:{"x-tenant-id":TENANT}});const b=await r.json();if(r.ok&&b.success)setBill(b.data);};
