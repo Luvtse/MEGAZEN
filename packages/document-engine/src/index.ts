@@ -841,14 +841,6 @@ const drawTermsAndVerification = async (
     }
   );
 
-  const qrPayload = [
-    "MEGAZEN-BL",
-    `BL=${document.blNumber}`,
-    `V=${document.version}`,
-    `HASH=${contentHash}`,
-    `VERIFY=${document.verificationCode}`
-  ].join("|");
-
   const verificationBaseUrl =
   process.env.MEGAZEN_DOCUMENT_VERIFY_URL ??
   "http://localhost:3000/verify/bl";
@@ -859,6 +851,19 @@ const verificationUrl =
   )}`;
 
 const qrPayload = verificationUrl;
+
+  drawText(
+  pdf,
+  verificationUrl,
+  verificationX + 7,
+  boxY + 104,
+  verificationWidth - 14,
+  {
+    fontSize: 4.5,
+    align: "center",
+    color: MID_GRAY
+  }
+);
 
   if (!qrBase64) {
     throw new Error(
