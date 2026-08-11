@@ -849,16 +849,16 @@ const drawTermsAndVerification = async (
     `VERIFY=${document.verificationCode}`
   ].join("|");
 
-  const qrDataUrl = await QRCode.toDataURL(
-    qrPayload,
-    {
-      errorCorrectionLevel: "H",
-      margin: 1,
-      width: 240
-    }
-  );
+  const verificationBaseUrl =
+  process.env.MEGAZEN_DOCUMENT_VERIFY_URL ??
+  "http://localhost:3000/verify/bl";
 
-  const qrBase64 = qrDataUrl.split(",")[1];
+const verificationUrl =
+  `${verificationBaseUrl}/${encodeURIComponent(
+    document.verificationCode
+  )}`;
+
+const qrPayload = verificationUrl;
 
   if (!qrBase64) {
     throw new Error(
