@@ -336,17 +336,24 @@ model BillOfLadingContainer {
 }
 
 model BillOfLadingRevision {
-  id            String       @id @default(uuid())
+  id            String        @id @default(uuid())
   billOfLadingId String
   version       Int
   snapshot      Json
+  contentHash   String?
   changedBy     String?
   reason        String?
-  createdAt     DateTime     @default(now())
-  billOfLading  BillOfLading @relation(fields: [billOfLadingId], references: [id], onDelete: Cascade)
-  @@unique([billOfLadingId, version])
-}
+  createdAt     DateTime      @default(now())
 
+  billOfLading  BillOfLading  @relation(
+    fields: [billOfLadingId],
+    references: [id],
+    onDelete: Cascade
+  )
+
+  @@unique([billOfLadingId, version])
+  @@index([billOfLadingId, createdAt])
+}
 model Approval {
   id            String        @id @default(uuid())
   entityType    String
