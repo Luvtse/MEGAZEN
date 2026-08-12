@@ -7,6 +7,14 @@ import {
   createDocumentNumber,
   createVerificationCode
 } from "../utils/numbering.js";
+import {
+  amendBillOfLadingSchema
+} from "../validators/bill-of-lading.js";
+import {
+  calculateBillOfLadingChanges
+} from "../utils/bill-of-lading-diff.js";
+
+const MAX_BILL_OF_LADING_AMENDMENTS = 3;
 
 const uuidSchema = z.string().uuid();
 
@@ -640,49 +648,113 @@ billOfLadingRouter.post("/:id/surrender", async (req, res, next) => {
  */
 billOfLadingRouter.post("/:id/amend", async (req, res, next) => {
   try {
-    const input = revisionSchema.parse(req.body);
+    const input = amendBillOfLadingSchema.parse(req.body);
 
-    const document = await prisma.$transaction(async (tx) => {
-      const existing = await tx.billOfLading.findFirstOrThrow({
+    const result = await prisma.$transaction(async (tx) => {
+      const current = await tx.billOfLading.findFirstOrThrow({
         where: {
           id: req.params.id,
           tenantId: req.tenantId
         },
         include: {
-          containers: true
+          containers: {
+            include: {
+              container: true
+            }
+          }
         }
       });
 
-      if (
-        existing.status === "ISSUED" ||
-        existing.status === "RELEASED" ||
-        existing.status === "SURRENDERED"
-      ) {
-        throw new Error("ISSUED_BL_REQUIRES_CONTROLLED_AMENDMENT");
+      /*
+       * A draft that has never been issued
+       * can be edited normally.
+       *
+       * An issued document requires a
+       * controlled amendment.
+       */
+      const amendableStatuses = [
+        "ISSUED",
+        "SURRENDERED",
+        "RELEASED"
+      ];
+
+      if (!amendableStatuses.includes(current.status)) {
+        throw new Error(
+          "Only an issued, surrendered, or released Bill of Lading can be amended through the amendment workflow."
+        );
       }
 
-      const nextVersion = existing.version + 1;
+      const amendmentCount = await tx.billOfLadingRevision.count({
+        where: {
+          billOfLadingId: current.id,
+          reason: {
+            startsWith: "Amendment:"
+          }
+        }
+      });
+
+      if (amendmentCount >= MAX_BILL_OF_LADING_AMENDMENTS) {
+        throw new Error(
+          "The maximum number of Bill of Lading amendments has been reached."
+        );
+      }
+
+      const previous = JSON.parse(
+        JSON.stringify(current)
+      ) as Record<string, unknown>;
+
+      const nextVersion = current.version + 1;
 
       const updated = await tx.billOfLading.update({
         where: {
-          id: existing.id
+          id: current.id
         },
         data: {
-          status: "DRAFT",
+          placeOfReceipt: input.placeOfReceipt,
+          portOfLoading: input.portOfLoading,
+          portOfDischarge: input.portOfDischarge,
+          placeOfDelivery: input.placeOfDelivery,
+          shipperName: input.shipperName,
+          shipperAddress: input.shipperAddress,
+          consigneeName: input.consigneeName,
+          consigneeAddress: input.consigneeAddress,
+          notifyPartyName: input.notifyPartyName,
+          notifyPartyAddress: input.notifyPartyAddress,
+          vesselName: input.vesselName,
+          voyageNumber: input.voyageNumber,
+          freightTerms: input.freightTerms,
+          marksAndNumbers: input.marksAndNumbers,
+          description: input.description,
+          grossWeight: input.grossWeight,
+          measurement: input.measurement,
+          packageCount: input.packageCount,
+          currency: input.currency,
+          declaredValue: input.declaredValue,
+          termsText: input.termsText,
           version: nextVersion,
+          status: "DRAFT",
           documentHash: null
         }
       });
 
+      const after = JSON.parse(
+        JSON.stringify(updated)
+      ) as Record<string, unknown>;
+
+      const changes = calculateBillOfLadingChanges(previous, after);
+
+      if (changes.length === 0) {
+        throw new Error(
+          "The amendment does not change any Bill of Lading field."
+        );
+      }
+
       await tx.billOfLadingRevision.create({
         data: {
-          billOfLadingId: existing.id,
+          billOfLadingId: current.id,
           version: nextVersion,
-          snapshot: {
-            previous: JSON.parse(JSON.stringify(existing)),
-            amendment: input.reason
-          },
-          reason: input.reason
+          snapshot: after,
+          reason: `Amendment: ${input.reason}`
         }
       });
 
@@ -690,20 +762,157 @@ billOfLadingRouter.post("/:id/amend", async (req, res, next) => {
         data: {
           tenantId: req.tenantId,
           entityType: "BillOfLading",
-          entityId: existing.id,
-          action: "AMENDMENT_STARTED",
+          entityId: current.id,
+          action: "AMENDED",
           data: {
-            previousVersion: existing.version,
-            version: nextVersion,
-            reason: input.reason
+            previousVersion: current.version,
+            newVersion: nextVersion,
+            reason: input.reason,
+            changes
           }
         }
       });
 
-      return updated;
+      return {
+        document: updated,
+        previousVersion: current.version,
+        newVersion: nextVersion,
+        changes
+      };
     });
 
-    ok(res, document);
+    res.status(201).json({
+      success: true,
+      data: result,
+      error: null,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message.startsWith("Only an issued") ||
+       error.message.startsWith("The amendment does not") ||
+       error.message.startsWith("The maximum number"))
+    ) {
+      const errorCode = error.message.startsWith("The maximum number")
+        ? "BL_AMENDMENT_LIMIT_REACHED"
+        : "BL_AMENDMENT_REJECTED";
+
+      res.status(409).json({
+        success: false,
+        data: null,
+        error: {
+          code: errorCode,
+          message: error.message
+        },
+        timestamp: new Date().toISOString()
+      });
+
+      return;
+    }
+
+    next(error);
+  }
+});
+
+/**
+ * GET /api/bills-of-lading/:id/revisions
+ */
+billOfLadingRouter.get("/:id/revisions", async (req, res, next) => {
+  try {
+    const document = await prisma.billOfLading.findFirstOrThrow({
+      where: {
+        id: req.params.id,
+        tenantId: req.tenantId
+      },
+      select: {
+        id: true,
+        blNumber: true
+      }
+    });
+
+    const revisions = await prisma.billOfLadingRevision.findMany({
+      where: {
+        billOfLadingId: document.id
+      },
+      orderBy: {
+        version: "desc"
+      },
+      select: {
+        id: true,
+        version: true,
+        reason: true,
+        contentHash: true,
+        changedBy: true,
+        createdAt: true
+      }
+    });
+
+    res.json({
+      success: true,
+      data: {
+        blNumber: document.blNumber,
+        revisions
+      },
+      error: null,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/bills-of-lading/:id/revisions/:version
+ */
+billOfLadingRouter.get("/:id/revisions/:version", async (req, res, next) => {
+  try {
+    const version = Number(req.params.version);
+
+    if (!Number.isInteger(version) || version < 1) {
+      res.status(400).json({
+        success: false,
+        data: null,
+        error: {
+          code: "INVALID_VERSION",
+          message: "B/L version must be a positive integer."
+        },
+        timestamp: new Date().toISOString()
+      });
+
+      return;
+    }
+
+    const revision = await prisma.billOfLadingRevision.findFirst({
+      where: {
+        version,
+        billOfLading: {
+          id: req.params.id,
+          tenantId: req.tenantId
+        }
+      }
+    });
+
+    if (!revision) {
+      res.status(404).json({
+        success: false,
+        data: null,
+        error: {
+          code: "REVISION_NOT_FOUND",
+          message: "B/L revision was not found."
+        },
+        timestamp: new Date().toISOString()
+      });
+
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: revision,
+      error: null,
+      timestamp: new Date().toISOString()
+    });
   } catch (error) {
     next(error);
   }
