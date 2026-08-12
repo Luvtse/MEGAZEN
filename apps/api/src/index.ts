@@ -7,3 +7,8 @@ app.use(
   "/api/bills-of-lading",
   billOfLadingPdfRouter
 );
+
+app.use(
+  "/api/bills-of-lading",
+  billOfLadingVerificationRouter
+);
