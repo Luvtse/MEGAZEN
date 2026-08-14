@@ -56,44 +56,52 @@ enum OrderStatus {
 
 enum BillOfLadingStatus {
   DRAFT
-  PENDING_APPROVAL
+  REVIEW
   APPROVED
   ISSUED
+  AMENDED
   SURRENDERED
-  RELEASED
   CANCELLED
 }
 
+enum BillOfLadingCopyType {
+  ORIGINAL
+  COPY
+  NON_NEGOTIABLE_COPY
+}
+
 model Tenant {
-  id            String           @id @default(uuid())
-  name          String
-  code          String           @unique
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
-  users         User[]
-  customers     Customer[]
-  containers    Container[]
-  bookings      Booking[]
-  shipments     Shipment[]
-  events        ContainerEvent[]
-  releaseOrders  ReleaseOrder[]
-  deliveryOrders DeliveryOrder[]
-  billsOfLading  BillOfLading[]
-  auditLogs      AuditLog[]
+  id                String                   @id @default(uuid())
+  name              String
+  code              String                   @unique
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  users             User[]
+  customers         Customer[]
+  containers        Container[]
+  bookings          Booking[]
+  shipments         Shipment[]
+  events            ContainerEvent[]
+  releaseOrders     ReleaseOrder[]
+  deliveryOrders    DeliveryOrder[]
+  billsOfLading     BillOfLading[]
+  auditLogs         AuditLog[]
 }
 
 model User {
-  id         String   @id @default(uuid())
-  email      String
-  name       String
-  role       UserRole @default(VIEWER)
-  tenantId   String
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  eventLogs  EventLog[]
-  auditLogs  AuditLog[] @relation("AuditActor")
-  approvals  Approval[] @relation("ApprovalActor")
+  id                           String                        @id @default(uuid())
+  email                        String
+  name                         String
+  role                         UserRole                      @default(VIEWER)
+  tenantId                     String
+  createdAt                    DateTime                      @default(now())
+  updatedAt                    DateTime                      @updatedAt
+  tenant                       Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  eventLogs                    EventLog[]
+  auditLogs                    AuditLog[]                    @relation("AuditActor")
+  approvals                    Approval[]                    @relation("ApprovalActor")
+  createdBillOfLadings         BillOfLading[]                @relation("BillOfLadingCreator")
+  createdBillOfLadingVersions  BillOfLadingVersion[]         @relation("BillOfLadingVersionCreator")
   @@unique([tenantId, email])
   @@index([tenantId])
 }
@@ -128,44 +136,44 @@ model Vessel {
 }
 
 model Voyage {
-  id          String     @id @default(uuid())
-  vesselId    String
+  id           String     @id @default(uuid())
+  vesselId     String
   voyageNumber String
-  origin      String
-  destination String
-  etd         DateTime?
-  eta         DateTime?
-  atd         DateTime?
-  ata         DateTime?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  vessel      Vessel     @relation(fields: [vesselId], references: [id])
-  shipments   Shipment[]
+  origin       String
+  destination  String
+  etd          DateTime?
+  eta          DateTime?
+  atd          DateTime?
+  ata          DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  vessel       Vessel     @relation(fields: [vesselId], references: [id])
+  shipments    Shipment[]
   @@unique([vesselId, voyageNumber])
 }
 
 model Container {
-  id              String          @id @default(uuid())
-  containerNumber String
-  type            String
-  size            String
-  status          ContainerStatus @default(REGISTERED)
-  location        String?
-  yardPosition    String?
-  carrier         String?
-  vessel          String?
-  voyage          String?
-  eta             DateTime?
-  etd             DateTime?
-  tenantId        String
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  events          ContainerEvent[]
-  bookings        Booking[]
-  releaseOrders   ReleaseOrder[]
-  deliveryOrders  DeliveryOrder[]
-  billContainers  BillOfLadingContainer[]
+  id                     String                      @id @default(uuid())
+  containerNumber        String
+  type                   String
+  size                   String
+  status                 ContainerStatus             @default(REGISTERED)
+  location               String?
+  yardPosition           String?
+  carrier                String?
+  vessel                 String?
+  voyage                 String?
+  eta                    DateTime?
+  etd                    DateTime?
+  tenantId               String
+  createdAt              DateTime                    @default(now())
+  updatedAt              DateTime                    @updatedAt
+  tenant                 Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  events                 ContainerEvent[]
+  bookings               Booking[]
+  releaseOrders          ReleaseOrder[]
+  deliveryOrders         DeliveryOrder[]
+  billOfLadingContainers BillOfLadingContainer[]
   @@unique([tenantId, containerNumber])
   @@index([tenantId, status])
 }
@@ -214,23 +222,24 @@ model Booking {
 }
 
 model Shipment {
-  id          String         @id @default(uuid())
-  bookingId   String         @unique
-  voyageId    String?
-  vessel      String?
-  voyage      String?
-  blNumber    String?
-  status      ShipmentStatus @default(PLANNED)
-  etd         DateTime?
-  eta         DateTime?
-  atd         DateTime?
-  ata         DateTime?
-  tenantId    String
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
-  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking     Booking        @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  voyageRef   Voyage?        @relation(fields: [voyageId], references: [id])
+  id             String         @id @default(uuid())
+  bookingId      String         @unique
+  voyageId       String?
+  vessel         String?
+  voyage         String?
+  blNumber       String?
+  status         ShipmentStatus @default(PLANNED)
+  etd            DateTime?
+  eta            DateTime?
+  atd            DateTime?
+  ata            DateTime?
+  tenantId       String
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking        Booking        @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  voyageRef      Voyage?        @relation(fields: [voyageId], references: [id])
+  billOfLadings  BillOfLading[]
   @@index([tenantId, status])
 }
 
@@ -255,105 +264,166 @@ model ReleaseOrder {
 }
 
 model DeliveryOrder {
-  id             String      @id @default(uuid())
-  orderNumber    String      @unique
-  bookingId      String
-  containerId    String?
-  status         OrderStatus @default(DRAFT)
-  issuedAt       DateTime?
-  expiresAt      DateTime?
-  consignee      String
+  id              String      @id @default(uuid())
+  orderNumber     String      @unique
+  bookingId       String
+  containerId     String?
+  status          OrderStatus @default(DRAFT)
+  issuedAt        DateTime?
+  expiresAt       DateTime?
+  consignee       String
   deliveryAddress String?
-  deliveryAgent  String?
-  notes          String?
-  tenantId       String
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
-  tenant         Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking        Booking     @relation(fields: [bookingId], references: [id])
-  container      Container?  @relation(fields: [containerId], references: [id])
+  deliveryAgent   String?
+  notes           String?
+  tenantId        String
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  tenant          Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking         Booking     @relation(fields: [bookingId], references: [id])
+  container       Container?  @relation(fields: [containerId], references: [id])
   @@index([tenantId, status])
 }
 
 model BillOfLading {
-  id                 String              @id @default(uuid())
-  blNumber           String              @unique
-  bookingId          String
-  customerId         String
-  status             BillOfLadingStatus   @default(DRAFT)
-  documentType       String
-  placeOfReceipt     String
+  id                 String                   @id @default(cuid())
+  blNumber           String
+  version            Int                      @default(1)
+  status             BillOfLadingStatus       @default(DRAFT)
+  copyType           BillOfLadingCopyType     @default(ORIGINAL)
+
+  shipmentId         String?
+  bookingId          String?
+
+  carrierName        String
+  carrierAddress     String?
+
+  agentName          String?
+  agentAddress       String?
+
+  shipperName        String
+  shipperAddress     String
+
+  consigneeName      String
+  consigneeAddress   String
+
+  notifyPartyName    String?
+  notifyPartyAddress String?
+
+  placeOfReceipt     String?
   portOfLoading      String
   portOfDischarge    String
   placeOfDelivery    String?
-  shipperName        String
-  shipperAddress     String
-  consigneeName      String
-  consigneeAddress   String
-  notifyPartyName    String?
-  notifyPartyAddress String?
+
   vesselName         String?
   voyageNumber       String?
-  issuePlace         String
-  issueDate          DateTime
-  numberOfOriginals  Int                 @default(3)
+
   freightTerms       String?
-  marksAndNumbers    String?
-  description        String
-  grossWeight        Decimal?            @db.Decimal(14, 3)
-  measurement        Decimal?            @db.Decimal(14, 3)
-  packageCount       Int?
+
+  placeOfIssue       String
+  issueDate          DateTime?
+
+  totalPackages      Int?
+  totalGrossWeight   Decimal?                 @db.Decimal(18, 3)
+  totalMeasurement   Decimal?                 @db.Decimal(18, 3)
+
   currency           String?
-  declaredValue      Decimal?            @db.Decimal(16, 2)
+  declaredValue      Decimal?                 @db.Decimal(18, 2)
+
   termsText          String?
-  verificationCode   String              @unique
+
   documentHash       String?
-  version            Int                 @default(1)
+  pdfStorageKey      String?
+
+  verificationToken  String                   @unique
+
   tenantId           String
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  booking            Booking             @relation(fields: [bookingId], references: [id])
-  customer            Customer            @relation(fields: [customerId], references: [id])
+
+  createdById        String?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  shipment           Shipment?                @relation(fields: [shipmentId], references: [id])
+  booking            Booking?                 @relation(fields: [bookingId], references: [id])
+
+  createdBy          User?                    @relation("BillOfLadingCreator", fields: [createdById], references: [id])
+
+  versions           BillOfLadingVersion[]
   containers         BillOfLadingContainer[]
-  revisions          BillOfLadingRevision[]
-  approvals          Approval[]
-  @@index([tenantId, status])
+
+  @@unique([tenantId, blNumber, version])
+  @@index([tenantId])
+  @@index([shipmentId])
+  @@index([bookingId])
+  @@index([status])
+  @@index([blNumber])
 }
 
 model BillOfLadingContainer {
-  id            String       @id @default(uuid())
-  billOfLadingId String
-  containerId   String
-  sealNumber    String?
-  packageCount  Int?
-  packageType   String?
-  grossWeight   Decimal?     @db.Decimal(14, 3)
-  measurement   Decimal?     @db.Decimal(14, 3)
-  billOfLading  BillOfLading @relation(fields: [billOfLadingId], references: [id], onDelete: Cascade)
-  container     Container    @relation(fields: [containerId], references: [id])
-  @@unique([billOfLadingId, containerId])
-}
+  id               String        @id @default(cuid())
 
-model BillOfLadingRevision {
-  id            String        @id @default(uuid())
-  billOfLadingId String
-  version       Int
-  snapshot      Json
-  contentHash   String?
-  changedBy     String?
-  reason        String?
-  createdAt     DateTime      @default(now())
+  billOfLadingId   String
+  containerId      String
 
-  billOfLading  BillOfLading  @relation(
+  containerNumber  String
+  sealNumber       String?
+
+  containerType    String?
+  packageCount     Int?
+  grossWeight      Decimal?      @db.Decimal(18, 3)
+  measurement      Decimal?      @db.Decimal(18, 3)
+
+  marksAndNumbers  String?
+  description      String?
+
+  createdAt        DateTime      @default(now())
+
+  billOfLading     BillOfLading  @relation(
     fields: [billOfLadingId],
     references: [id],
     onDelete: Cascade
   )
 
-  @@unique([billOfLadingId, version])
-  @@index([billOfLadingId, createdAt])
+  container        Container     @relation(
+    fields: [containerId],
+    references: [id]
+  )
+
+  @@unique([billOfLadingId, containerId])
+  @@index([billOfLadingId])
+  @@index([containerId])
 }
+
+model BillOfLadingVersion {
+  id             String   @id @default(cuid())
+  billOfLadingId String
+  version        Int
+
+  status         String
+
+  documentHash   String?
+  pdfStorageKey  String?
+
+  reason         String?
+
+  createdById    String?
+
+  createdAt      DateTime @default(now())
+
+  billOfLading BillOfLading @relation(
+    fields: [billOfLadingId],
+    references: [id]
+  )
+
+  createdBy User? @relation(
+    "BillOfLadingVersionCreator",
+    fields: [createdById],
+    references: [id]
+  )
+
+  @@unique([billOfLadingId, version])
+  @@index([billOfLadingId])
+}
+
 model Approval {
   id            String        @id @default(uuid())
   entityType    String
