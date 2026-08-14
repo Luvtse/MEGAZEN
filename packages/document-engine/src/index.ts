@@ -791,16 +791,53 @@ const drawContainerRows = (
   return y;
 };
 
-const drawTermsAndVerification = async (
+// NEW: drawVerification function that matches your initial requirement
+const drawVerification = (
+  pdf: PDFKit.PDFDocument,
+  qrImage: Buffer,
+  x: number,
+  y: number,
+  size: number
+): void => {
+  // Draw the QR code
+  pdf
+    .image(
+      qrImage,
+      x,
+      y,
+      {
+        width: size,
+        height: size
+      }
+    );
+
+  // Draw "VERIFY DOCUMENT" label below the QR code
+  pdf
+    .font("Helvetica-Bold")
+    .fontSize(5.5)
+    .fillColor(BLACK)
+    .text(
+      "VERIFY DOCUMENT",
+      x,
+      y + size + 4,
+      size,
+      {
+        align: "center"
+      }
+    );
+};
+
+// MODIFIED: drawTermsAndVerification now accepts qrImage as parameter
+const drawTermsAndVerification = (
   pdf: PDFKit.PDFDocument,
   document: BillOfLadingDocument,
   contentHash: string,
+  qrImage: Buffer,
   y: number
-): Promise<number> => {
+): number => {
   const gap = 8;
   const verificationWidth = 145;
-  const termsWidth =
-    CONTENT_WIDTH - verificationWidth - gap;
+  const termsWidth = CONTENT_WIDTH - verificationWidth - gap;
 
   const sectionY = drawSectionTitle(
     pdf,
@@ -813,6 +850,7 @@ const drawTermsAndVerification = async (
   const boxY = sectionY;
   const boxHeight = 118;
 
+  // Terms box
   drawBox(
     pdf,
     MARGIN_LEFT,
@@ -841,43 +879,8 @@ const drawTermsAndVerification = async (
     }
   );
 
-  const verificationBaseUrl =
-  process.env.MEGAZEN_DOCUMENT_VERIFY_URL ??
-  "http://localhost:3000/verify/bl";
-
-const verificationUrl =
-  `${verificationBaseUrl}/${encodeURIComponent(
-    document.verificationCode
-  )}`;
-
-const qrPayload = verificationUrl;
-
-  drawText(
-  pdf,
-  verificationUrl,
-  verificationX + 7,
-  boxY + 104,
-  verificationWidth - 14,
-  {
-    fontSize: 4.5,
-    align: "center",
-    color: MID_GRAY
-  }
-);
-
-  if (!qrBase64) {
-    throw new Error(
-      "Unable to create Bill of Lading verification QR code."
-    );
-  }
-
-  const qrBuffer = Buffer.from(
-    qrBase64,
-    "base64"
-  );
-
-  const verificationX =
-    MARGIN_LEFT + termsWidth + gap;
+  // Verification box with QR code
+  const verificationX = MARGIN_LEFT + termsWidth + gap;
 
   drawBox(
     pdf,
@@ -900,16 +903,20 @@ const qrPayload = verificationUrl;
     }
   );
 
-  pdf.image(
-    qrBuffer,
-    verificationX + 39,
-    boxY + 23,
-    {
-      width: 67,
-      height: 67
-    }
+  // Use the new drawVerification function
+  const qrSize = 67;
+  const qrX = verificationX + (verificationWidth - qrSize) / 2;
+  const qrY = boxY + 23;
+
+  drawVerification(
+    pdf,
+    qrImage,
+    qrX,
+    qrY,
+    qrSize
   );
 
+  // Show verification code below QR
   drawText(
     pdf,
     document.verificationCode,
@@ -920,6 +927,29 @@ const qrPayload = verificationUrl;
       fontSize: 6.5,
       bold: true,
       align: "center"
+    }
+  );
+
+  // Show verification URL
+  const verificationBaseUrl =
+    process.env.MEGAZEN_DOCUMENT_VERIFY_URL ??
+    "http://localhost:3000/verify/bl";
+
+  const verificationUrl =
+    `${verificationBaseUrl}/${encodeURIComponent(
+      document.verificationCode
+    )}`;
+
+  drawText(
+    pdf,
+    verificationUrl,
+    verificationX + 7,
+    boxY + 104,
+    verificationWidth - 14,
+    {
+      fontSize: 4.5,
+      align: "center",
+      color: MID_GRAY
     }
   );
 
@@ -1019,6 +1049,25 @@ const createPdf = (): {
   };
 };
 
+// NEW: Helper function to generate QR code image
+const generateQRImage = async (verificationCode: string): Promise<Buffer> => {
+  const verificationBaseUrl =
+    process.env.MEGAZEN_DOCUMENT_VERIFY_URL ??
+    "http://localhost:3000/verify/bl";
+
+  const verificationUrl =
+    `${verificationBaseUrl}/${encodeURIComponent(verificationCode)}`;
+
+  const qrBase64 = await QRCode.toDataURL(verificationUrl, {
+    errorCorrectionLevel: "M",
+    margin: 1,
+    width: 200
+  });
+
+  return Buffer.from(qrBase64.split(",")[1], "base64");
+};
+
+// MODIFIED: renderBillOfLading now generates QR and passes it to drawTermsAndVerification
 export async function renderBillOfLading(
   document: BillOfLadingDocument
 ): Promise<Buffer> {
@@ -1028,12 +1077,11 @@ export async function renderBillOfLading(
     document.documentHash ??
     hashForDocument(document);
 
+  // Generate QR image once at the beginning
+  const qrImage = await generateQRImage(document.verificationCode);
+
   const rows = getContainerRows(document);
 
-  /*
-   * We deliberately keep the first page dense but readable.
-   * Continuation pages are used when the equipment list grows.
-   */
   const FIRST_PAGE_ROWS = 7;
   const CONTINUATION_PAGE_ROWS = 23;
 
@@ -1118,11 +1166,6 @@ export async function renderBillOfLading(
         y
       );
 
-      /*
-       * If there is enough room, render terms
-       * on page one. Otherwise they are placed
-       * on the final continuation page.
-       */
       const termsAvailable =
         PAGE_HEIGHT -
         FOOTER_HEIGHT -
@@ -1135,10 +1178,11 @@ export async function renderBillOfLading(
       ) {
         y += 8;
 
-        await drawTermsAndVerification(
+        drawTermsAndVerification(
           pdf,
           document,
           contentHash,
+          qrImage,
           y
         );
       }
@@ -1184,10 +1228,11 @@ export async function renderBillOfLading(
           FOOTER_HEIGHT -
           155;
 
-        await drawTermsAndVerification(
+        drawTermsAndVerification(
           pdf,
           document,
           contentHash,
+          qrImage,
           finalY
         );
       }
@@ -1206,5 +1251,6 @@ export async function renderBillOfLading(
 }
 
 export {
-  hashForDocument
+  hashForDocument,
+  generateQRImage
 };
