@@ -13,6 +13,8 @@ import {
 import {
   calculateBillOfLadingChanges
 } from "../utils/bill-of-lading-diff.js";
+import { amendBillOfLading } from "../services/bill-of-lading.js";
+import { issueBillOfLading } from "../services/bill-of-lading.js";
 
 const MAX_BILL_OF_LADING_AMENDMENTS = 3;
 
@@ -467,87 +469,6 @@ billOfLadingRouter.post("/:id/approve", async (req, res, next) => {
 });
 
 /**
- * POST /api/bills-of-lading/:id/issue
- */
-billOfLadingRouter.post("/:id/issue", async (req, res, next) => {
-  try {
-    const document = await prisma.$transaction(async (tx) => {
-      const existing = await tx.billOfLading.findFirstOrThrow({
-        where: {
-          id: req.params.id,
-          tenantId: req.tenantId
-        },
-        include: {
-          containers: {
-            include: {
-              container: true
-            }
-          }
-        }
-      });
-
-      if (existing.status !== "APPROVED") {
-        throw new Error("BL_NOT_APPROVED");
-      }
-
-      const payload = {
-        id: existing.id,
-        blNumber: existing.blNumber,
-        version: existing.version,
-        verificationCode: existing.verificationCode,
-        issueDate: existing.issueDate.toISOString(),
-        shipperName: existing.shipperName,
-        consigneeName: existing.consigneeName,
-        portOfLoading: existing.portOfLoading,
-        portOfDischarge: existing.portOfDischarge,
-        description: existing.description,
-        containers: existing.containers
-      };
-
-      const hash = createHash("sha256")
-        .update(JSON.stringify(payload))
-        .digest("hex");
-
-      const issued = await tx.billOfLading.update({
-        where: {
-          id: existing.id
-        },
-        data: {
-          status: "ISSUED",
-          documentHash: hash
-        },
-        include: {
-          containers: {
-            include: {
-              container: true
-            }
-          }
-        }
-      });
-
-      await tx.auditLog.create({
-        data: {
-          tenantId: req.tenantId,
-          entityType: "BillOfLading",
-          entityId: existing.id,
-          action: "ISSUED",
-          data: {
-            version: existing.version,
-            documentHash: hash
-          }
-        }
-      });
-
-      return issued;
-    });
-
-    ok(res, document);
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
  * POST /api/bills-of-lading/:id/release
  */
 billOfLadingRouter.post("/:id/release", async (req, res, next) => {
@@ -642,178 +563,184 @@ billOfLadingRouter.post("/:id/surrender", async (req, res, next) => {
 });
 
 /**
- * POST /api/bills-of-lading/:id/amend
- *
- * Creates a new controlled revision and returns the B/L to DRAFT.
+ * GET /api/bills-of-lading/verify/:token
+ * 
+ * Verify a Bill of Lading using its verification token
  */
-billOfLadingRouter.post("/:id/amend", async (req, res, next) => {
-  try {
-    const input = amendBillOfLadingSchema.parse(req.body);
+billOfLadingRouter.get(
+  "/verify/:token",
+  async (
+    req,
+    res,
+    next
+  ) => {
+    try {
+      const bill =
+        await prisma.billOfLading.findUnique({
+          where: {
+            verificationToken: req.params.token,
+            tenantId: req.tenantId
+          },
 
-    const result = await prisma.$transaction(async (tx) => {
-      const current = await tx.billOfLading.findFirstOrThrow({
-        where: {
-          id: req.params.id,
-          tenantId: req.tenantId
-        },
-        include: {
-          containers: {
-            include: {
-              container: true
-            }
+          select: {
+            blNumber: true,
+            version: true,
+            status: true,
+            documentHash: true,
+            issueDate: true,
+            carrierName: true,
+            shipperName: true,
+            consigneeName: true,
+            portOfLoading: true,
+            portOfDischarge: true
           }
-        }
-      });
+        });
 
-      /*
-       * A draft that has never been issued
-       * can be edited normally.
-       *
-       * An issued document requires a
-       * controlled amendment.
-       */
-      const amendableStatuses = [
-        "ISSUED",
-        "SURRENDERED",
-        "RELEASED"
-      ];
+      if (!bill) {
+        res.status(404).json({
+          success: false,
+          data: null,
+          error: {
+            code: "DOCUMENT_NOT_FOUND",
+            message: "Bill of Lading could not be verified."
+          },
+          timestamp: new Date().toISOString()
+        });
 
-      if (!amendableStatuses.includes(current.status)) {
-        throw new Error(
-          "Only an issued, surrendered, or released Bill of Lading can be amended through the amendment workflow."
-        );
+        return;
       }
 
-      const amendmentCount = await tx.billOfLadingRevision.count({
-        where: {
-          billOfLadingId: current.id,
-          reason: {
-            startsWith: "Amendment:"
+      res.json({
+        success: true,
+
+        data: {
+          verified: true,
+
+          document: {
+            blNumber: bill.blNumber,
+            version: bill.version,
+            status: bill.status,
+            documentHash: bill.documentHash,
+            issueDate: bill.issueDate,
+            carrier: bill.carrierName,
+            shipper: bill.shipperName,
+            consignee: bill.consigneeName,
+            portOfLoading: bill.portOfLoading,
+            portOfDischarge: bill.portOfDischarge
           }
-        }
-      });
-
-      if (amendmentCount >= MAX_BILL_OF_LADING_AMENDMENTS) {
-        throw new Error(
-          "The maximum number of Bill of Lading amendments has been reached."
-        );
-      }
-
-      const previous = JSON.parse(
-        JSON.stringify(current)
-      ) as Record<string, unknown>;
-
-      const nextVersion = current.version + 1;
-
-      const updated = await tx.billOfLading.update({
-        where: {
-          id: current.id
         },
-        data: {
-          placeOfReceipt: input.placeOfReceipt,
-          portOfLoading: input.portOfLoading,
-          portOfDischarge: input.portOfDischarge,
-          placeOfDelivery: input.placeOfDelivery,
-          shipperName: input.shipperName,
-          shipperAddress: input.shipperAddress,
-          consigneeName: input.consigneeName,
-          consigneeAddress: input.consigneeAddress,
-          notifyPartyName: input.notifyPartyName,
-          notifyPartyAddress: input.notifyPartyAddress,
-          vesselName: input.vesselName,
-          voyageNumber: input.voyageNumber,
-          freightTerms: input.freightTerms,
-          marksAndNumbers: input.marksAndNumbers,
-          description: input.description,
-          grossWeight: input.grossWeight,
-          measurement: input.measurement,
-          packageCount: input.packageCount,
-          currency: input.currency,
-          declaredValue: input.declaredValue,
-          termsText: input.termsText,
-          version: nextVersion,
-          status: "DRAFT",
-          documentHash: null
-        }
-      });
 
-      const after = JSON.parse(
-        JSON.stringify(updated)
-      ) as Record<string, unknown>;
+        error: null,
 
-      const changes = calculateBillOfLadingChanges(previous, after);
-
-      if (changes.length === 0) {
-        throw new Error(
-          "The amendment does not change any Bill of Lading field."
-        );
-      }
-
-      await tx.billOfLadingRevision.create({
-        data: {
-          billOfLadingId: current.id,
-          version: nextVersion,
-          snapshot: after,
-          reason: `Amendment: ${input.reason}`
-        }
-      });
-
-      await tx.auditLog.create({
-        data: {
-          tenantId: req.tenantId,
-          entityType: "BillOfLading",
-          entityId: current.id,
-          action: "AMENDED",
-          data: {
-            previousVersion: current.version,
-            newVersion: nextVersion,
-            reason: input.reason,
-            changes
-          }
-        }
-      });
-
-      return {
-        document: updated,
-        previousVersion: current.version,
-        newVersion: nextVersion,
-        changes
-      };
-    });
-
-    res.status(201).json({
-      success: true,
-      data: result,
-      error: null,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      (error.message.startsWith("Only an issued") ||
-       error.message.startsWith("The amendment does not") ||
-       error.message.startsWith("The maximum number"))
-    ) {
-      const errorCode = error.message.startsWith("The maximum number")
-        ? "BL_AMENDMENT_LIMIT_REACHED"
-        : "BL_AMENDMENT_REJECTED";
-
-      res.status(409).json({
-        success: false,
-        data: null,
-        error: {
-          code: errorCode,
-          message: error.message
-        },
         timestamp: new Date().toISOString()
       });
-
-      return;
+    } catch (error) {
+      next(error);
     }
-
-    next(error);
   }
-});
+);
+
+/**
+ * POST /api/bills-of-lading/:id/amend
+ * 
+ * Creates a new controlled revision and returns the B/L to DRAFT.
+ */
+billOfLadingRouter.post(
+  "/:id/amend",
+  async (
+    req,
+    res,
+    next
+  ) => {
+    try {
+      const parsed =
+        amendBillOfLadingSchema.safeParse(
+          req.body
+        );
+
+      if (
+        !parsed.success
+      ) {
+        res.status(400).json({
+          success: false,
+          data: null,
+          error: {
+            code: "VALIDATION_ERROR",
+            message: parsed.error.message
+          },
+          timestamp: new Date().toISOString()
+        });
+
+        return;
+      }
+
+      const bill =
+        await amendBillOfLading(
+          {
+            tenantId: req.tenantId,
+            userId: req.user?.id
+          },
+          req.params.id,
+          parsed.data
+        );
+
+      res.status(201).json({
+        success: true,
+        data: bill,
+        error: null,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/bills-of-lading/:id/issue
+ * 
+ * Issues the B/L and generates a PDF with document hash
+ */
+billOfLadingRouter.post(
+  "/:id/issue",
+  async (
+    req,
+    res,
+    next
+  ) => {
+    try {
+      const result =
+        await issueBillOfLading(
+          {
+            tenantId: req.tenantId,
+            userId: req.user?.id
+          },
+          req.params.id
+        );
+
+      res.setHeader(
+        "Content-Type",
+        "application/pdf"
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${result.filename}"`
+      );
+
+      res.setHeader(
+        "X-Document-Hash",
+        result.hash
+      );
+
+      res.send(
+        result.pdf
+      );
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 /**
  * GET /api/bills-of-lading/:id/revisions
