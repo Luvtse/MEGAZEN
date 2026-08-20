@@ -1,0 +1,90 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: megazen-postgres
+    environment:
+      POSTGRES_USER: megazen
+      POSTGRES_PASSWORD: megazen123
+      POSTGRES_DB: megazen
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U megazen"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - megazen-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: megazen-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - megazen-network
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: megazen-api
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://megazen:megazen123@postgres:5432/megazen
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=your-secret-key-change-in-production
+      - PORT=4000
+      - MEGAZEN_DOCUMENT_VERIFY_URL=http://localhost:3000/verify/bl
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/api:/app/apps/api
+      - ./packages:/app/packages
+    networks:
+      - megazen-network
+    command: pnpm run dev
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: megazen-web
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:4000
+      - NEXT_PUBLIC_WS_URL=ws://localhost:4000
+      - NEXT_PUBLIC_TENANT_ID=MEGAZEN-DEMO
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    volumes:
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+    networks:
+      - megazen-network
+    command: pnpm run dev
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  megazen-network:
+    driver: bridge

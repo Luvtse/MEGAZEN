@@ -1,0 +1,1313 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// 1. IDENTITY & TENANCY
+// ==========================================
+
+model Tenant {
+  id                String   @id @default(cuid())
+  name              String
+  code              String   @unique
+  domain            String?
+  config            Json?
+  status            String   @default("active") // active, suspended, inactive
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  organizations     Organization[]
+  users             User[]
+  customers         Customer[]
+  bookings          Booking[]
+  containers        Container[]
+  vessels           Vessel[]
+  shipments         Shipment[]
+  releaseOrders     ReleaseOrder[]
+  deliveryOrders    DeliveryOrder[]
+  billsOfLading     BillOfLading[]
+  yardSlots         YardSlot[]
+  ediIngestions     EDIIngestion[]
+  invoices          Invoice[]
+  auditLogs         AuditLog[]
+  complianceChecks  ComplianceCheck[]
+  sanctionsScreenings SanctionsScreening[]
+  workflows         Workflow[]
+  businessRules     BusinessRule[]
+  notifications     Notification[]
+  documentTemplates DocumentTemplate[]
+  documents         Document[]
+  amendmentFees     AmendmentFee[]
+  apiKeys           ApiKey[]
+  roles             Role[]
+  permissions       Permission[]
+  charges           Charge[]
+  shippingLines     ShippingLine[]
+  agents            Agent[]
+  integrationLogs   IntegrationLog[]
+  notificationTemplates NotificationTemplate[]
+
+  @@index([code])
+  @@index([status])
+}
+
+model Organization {
+  id                String   @id @default(cuid())
+  tenantId          String
+  name              String
+  registrationNumber String?
+  taxId             String?
+  address           String?
+  phone             String?
+  email             String?
+  website           String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+model User {
+  id                String   @id @default(cuid())
+  tenantId          String
+  email             String
+  password          String
+  firstName         String
+  lastName          String
+  roleId            String?
+  status            String   @default("active") // active, inactive, suspended
+  lastLogin         DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  role              Role?    @relation(fields: [roleId], references: [id])
+  sessions          Session[]
+  auditLogs         AuditLog[]
+  notifications     Notification[]
+  notificationPreferences NotificationPreference[]
+  approvals         BookingApproval[] @relation("ApprovedBy")
+  bolApprovals      BillOfLadingApproval[] @relation("ApprovedBy")
+  roApprovals       ReleaseOrderApproval[] @relation("ApprovedBy")
+  documents         Document[] @relation("GeneratedBy")
+  documentVerifications DocumentVerification[] @relation("VerifiedBy")
+  workflowSteps     WorkflowStep[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@index([status])
+}
+
+model Role {
+  id                String   @id @default(cuid())
+  tenantId          String
+  name              String
+  description       String?
+  permissions       Permission[]
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users             User[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+model Permission {
+  id                String   @id @default(cuid())
+  tenantId          String
+  resource          String   // bookings, containers, users, etc.
+  action            String   // create, read, update, delete, approve
+  description       String?
+  createdAt         DateTime @default(now())
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roles             Role[]
+
+  @@unique([tenantId, resource, action])
+  @@index([tenantId])
+}
+
+model Session {
+  id                String   @id @default(cuid())
+  userId            String
+  token             String   @unique
+  expiresAt         DateTime
+  ipAddress         String?
+  userAgent         String?
+  createdAt         DateTime @default(now())
+
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+}
+
+model ApiKey {
+  id                String   @id @default(cuid())
+  tenantId          String
+  name              String
+  key               String   @unique
+  expiresAt         DateTime?
+  lastUsed          DateTime?
+  createdAt         DateTime @default(now())
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([key])
+}
+
+// ==========================================
+// 2. CUSTOMER & TRADE PARTNERS
+// ==========================================
+
+model Customer {
+  id                String   @id @default(cuid())
+  tenantId          String
+  code              String
+  name              String
+  type              String   // importer, exporter, forwarder, broker
+  contactPerson     String?
+  email             String?
+  phone             String?
+  address           String?
+  country           String?
+  taxId             String?
+  creditLimit       Float    @default(0)
+  creditUsed        Float    @default(0)
+  status            String   @default("active") // active, suspended, inactive
+  tags              String[]  // customer segments
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contacts          CustomerContact[]
+  bookings          Booking[]
+  releaseOrders     ReleaseOrder[]
+  deliveryOrders    DeliveryOrder[]
+  invoices          Invoice[]
+  sanctionsScreenings SanctionsScreening[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([status])
+}
+
+model CustomerContact {
+  id                String   @id @default(cuid())
+  customerId        String
+  name              String
+  email             String?
+  phone             String?
+  department        String?
+  isPrimary         Boolean   @default(false)
+  createdAt         DateTime @default(now())
+
+  customer          Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+}
+
+model ShippingLine {
+  id                String   @id @default(cuid())
+  tenantId          String
+  code              String
+  name              String
+  scac              String   @unique
+  country           String?
+  contactEmail      String?
+  contactPhone      String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bookings          Booking[]
+  vessels           Vessel[]
+  billsOfLading     BillOfLading[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+}
+
+model Agent {
+  id                String   @id @default(cuid())
+  tenantId          String
+  code              String
+  name              String
+  type              String   // customs, freight, general
+  contactPerson     String?
+  email             String?
+  phone             String?
+  address           String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bookings          Booking[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+}
+
+// ==========================================
+// 3. TRADE & BOOKING
+// ==========================================
+
+// Canonical booking reference: generated by the API runtime; never generated by Prisma/defaults.
+// It is immutable and must be a 10-digit Luhn-valid shipment reference.
+model Booking {
+  id                String   @id @default(cuid())
+  tenantId          String
+  bookingNumber     String
+  customerId        String
+  shippingLineId    String?
+  agentId           String?
+  origin            String   // Port code
+  destination       String   // Port code
+  cargoDescription  String
+  cargoType         String   // general, reefer, hazmat, etc.
+  weight            Float?   // KG
+  volume            Float?   // CBM
+  containerCount    Int      @default(1)
+  bookingDate       DateTime @default(now())
+  expectedShippingDate DateTime?
+  status            String   @default("pending") // pending, confirmed, approved, cancelled
+  approvalStatus    String   @default("pending") // pending, auto-approved, manual-approved, rejected
+  approvalWorkflow  Json?    // workflow state
+  priority          String   @default("normal") // low, normal, high, urgent
+  specialInstructions String?
+  creditCheckPassed Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer          Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  shippingLine      ShippingLine? @relation(fields: [shippingLineId], references: [id])
+  agent             Agent?   @relation(fields: [agentId], references: [id])
+  approvals         BookingApproval[]
+  containerAssignments ContainerAssignment[]
+  releaseOrders     ReleaseOrder[]
+  deliveryOrders    DeliveryOrder[]
+  shipments         Shipment[]
+  billsOfLading     BillOfLading[]
+  invoices          Invoice[]
+  workflowInstances WorkflowInstance[]
+  ruleExecutions    RuleExecution[]
+
+  @@unique([bookingNumber])
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([status])
+  @@index([approvalStatus])
+}
+
+model BookingApproval {
+  id                String   @id @default(cuid())
+  bookingId         String
+  step              Int      // Step number in approval workflow
+  approverId        String?
+  status            String   @default("pending") // pending, approved, rejected
+  comments          String?
+  approvedAt        DateTime?
+  createdAt         DateTime @default(now())
+
+  booking           Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  approver          User?    @relation("ApprovedBy", fields: [approverId], references: [id])
+
+  @@index([bookingId])
+  @@index([status])
+}
+
+// ==========================================
+// 4. CONTAINER MANAGEMENT
+// ==========================================
+
+model Container {
+  id                String   @id @default(cuid())
+  tenantId          String
+  containerNumber   String   @unique
+  type              String   // 20ft, 40ft, 40ft HC, Reefer, Open Top, Flat Rack
+  size              String   // 20, 40
+  status            String   @default("available") // available, assigned, shipped, delivered, maintenance
+  location          String?
+  yardPosition      String?  // yard block/bay/row/tier
+  carrier           String?
+  vessel            String?
+  voyage            String?
+  eta               DateTime?
+  etd               DateTime?
+  lastGateIn        DateTime?
+  lastGateOut       DateTime?
+  condition         String   @default("good") // good, fair, damaged
+  inspectionDate    DateTime?
+  cleaningDate      DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assignments       ContainerAssignment[]
+  events            ContainerEvent[]
+  inspections       ContainerInspection[]
+  billOfLadingItems BillOfLadingItem[]
+  roItems           ReleaseOrderItem[]
+  doItems           DeliveryOrderItem[]
+  yardSlots         YardSlot[]
+  yardMovements     YardMovement[]
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([location])
+}
+
+model ContainerAssignment {
+  id                String   @id @default(cuid())
+  bookingId         String
+  containerId       String
+  assignedAt        DateTime @default(now())
+  assignedBy        String?
+  reason            String?
+  status            String   @default("assigned") // assigned, in-transit, delivered
+  createdAt         DateTime @default(now())
+
+  booking           Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  container         Container @relation(fields: [containerId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([containerId])
+}
+
+model ContainerEvent {
+  id                String   @id @default(cuid())
+  containerId       String
+  tenantId          String
+  eventType         String   // gate_in, gate_out, loaded, discharged, damaged, inspected
+  status            String?
+  location          String?
+  timestamp         DateTime @default(now())
+  eventData         Json?
+  md5Hash           String   @unique // Deduplication
+  createdAt         DateTime @default(now())
+
+  container         Container @relation(fields: [containerId], references: [id], onDelete: Cascade)
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([containerId])
+  @@index([tenantId])
+  @@index([timestamp])
+}
+
+model ContainerInspection {
+  id                String   @id @default(cuid())
+  containerId       String
+  inspectionDate    DateTime
+  inspector         String?
+  condition         String   // good, fair, damaged
+  damageReport      String?
+  photos            String[]  // Photo URLs
+  passed            Boolean   @default(true)
+  createdAt         DateTime @default(now())
+
+  container         Container @relation(fields: [containerId], references: [id], onDelete: Cascade)
+
+  @@index([containerId])
+}
+
+// ==========================================
+// 5. VESSEL & VOYAGE
+// ==========================================
+
+model Vessel {
+  id                String   @id @default(cuid())
+  tenantId          String
+  name              String
+  imo               String?  @unique
+  callSign          String?
+  flag              String?
+  owner             String?
+  operator          String?
+  capacity          Int?     // TEU
+  length            Float?
+  beam              Float?
+  draft             Float?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  shippingLine      ShippingLine @relation(fields: [tenantId], references: [id])
+  voyages           Voyage[]
+
+  @@index([tenantId])
+}
+
+model Voyage {
+  id                String   @id @default(cuid())
+  vesselId          String
+  voyageNumber      String
+  rotation          String?
+  portOfLoading     String   // Port code
+  portOfDischarge   String   // Port code
+  etd               DateTime?
+  eta               DateTime?
+  atd               DateTime?
+  ata               DateTime?
+  status            String   @default("scheduled") // scheduled, in-transit, completed
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  vessel            Vessel   @relation(fields: [vesselId], references: [id], onDelete: Cascade)
+  shipments         Shipment[]
+  billsOfLading     BillOfLading[]
+  releaseOrders     ReleaseOrder[]
+  deliveryOrders    DeliveryOrder[]
+
+  @@index([vesselId])
+  @@index([status])
+}
+
+model Port {
+  id                String   @id @default(cuid())
+  code              String   @unique
+  name              String
+  country           String
+  unlocode          String?  @unique
+  timezone          String?
+  terminal          String?
+  address           String?
+  createdAt         DateTime @default(now())
+
+  @@index([code])
+  @@index([country])
+}
+
+// ==========================================
+// 6. SHIPMENT
+// ==========================================
+
+model Shipment {
+  id                String   @id @default(cuid())
+  tenantId          String
+  bookingId         String
+  shipmentNumber    String
+  vessel            String?
+  voyage            String?
+  blNumber          String?
+  status            String   @default("pending") // pending, shipped, in-transit, arrived, delivered
+  etd               DateTime?
+  eta               DateTime?
+  atd               DateTime?
+  ata               DateTime?
+  containerCount    Int      @default(0)
+  weight            Float?
+  volume            Float?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking           Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  voyage            Voyage?  @relation(fields: [voyage], references: [id])
+  milestones        ShipmentMilestone[]
+
+  @@unique([tenantId, shipmentNumber])
+  @@index([tenantId])
+  @@index([bookingId])
+  @@index([status])
+}
+
+model ShipmentMilestone {
+  id                String   @id @default(cuid())
+  shipmentId        String
+  milestoneType     String   // booking_confirmed, ro_issued, do_issued, vessel_departure, arrival, delivery
+  description       String?
+  location          String?
+  timestamp         DateTime @default(now())
+  status            String   @default("pending") // pending, completed
+  eventData         Json?
+  createdAt         DateTime @default(now())
+
+  shipment          Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId])
+  @@index([status])
+}
+
+// ==========================================
+// 7. RELEASE ORDER (RO)
+// ==========================================
+
+model ReleaseOrder {
+  id                String   @id @default(cuid())
+  tenantId          String
+  roNumber          String
+  bookingId         String
+  containerId       String?
+  customerId        String
+  shipperId         String?
+  consigneeId       String?
+  notifyParty       String?
+  vessel            String?
+  voyage            String?
+  portOfLoading     String?
+  portOfDischarge   String?
+  releaseDate       DateTime @default(now())
+  expiryDate        DateTime
+  releaseType       String   @default("commercial") // commercial, financial
+  status            String   @default("draft") // draft, issued, cancelled
+  financialClearanceStatus String @default("pending") // pending, cleared, hold
+  customsClearanceStatus String @default("pending") // pending, cleared, hold
+  yardLocation      String?
+  pickupLocation    String?
+  specialInstructions String?
+  digitalSignature  String?
+  qrCode            String?
+  sha256Hash        String?  @unique
+  approvedBy        String?
+  approvedAt        DateTime?
+  issuedBy          String?
+  issuedAt          DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking           Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  customer          Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  items             ReleaseOrderItem[]
+  approvals         ReleaseOrderApproval[]
+  deliveryOrders    DeliveryOrder[]
+
+  @@unique([tenantId, roNumber])
+  @@index([tenantId])
+  @@index([bookingId])
+  @@index([status])
+}
+
+model ReleaseOrderItem {
+  id                String   @id @default(cuid())
+  releaseOrderId    String
+  containerId       String
+  sealNumber        String?
+  packageCount      Int?
+  cargoDescription  String?
+  weight            Float?
+  createdAt         DateTime @default(now())
+
+  releaseOrder      ReleaseOrder @relation(fields: [releaseOrderId], references: [id], onDelete: Cascade)
+  container         Container @relation(fields: [containerId], references: [id], onDelete: Restrict)
+
+  @@index([releaseOrderId])
+  @@index([containerId])
+}
+
+model ReleaseOrderApproval {
+  id                String   @id @default(cuid())
+  releaseOrderId    String
+  step              Int
+  approverId        String?
+  status            String   @default("pending")
+  comments          String?
+  approvedAt        DateTime?
+  createdAt         DateTime @default(now())
+
+  releaseOrder      ReleaseOrder @relation(fields: [releaseOrderId], references: [id], onDelete: Cascade)
+  approver          User?    @relation("ApprovedBy", fields: [approverId], references: [id])
+
+  @@index([releaseOrderId])
+}
+
+// ==========================================
+// 8. DELIVERY ORDER (DO)
+// ==========================================
+
+model DeliveryOrder {
+  id                String   @id @default(cuid())
+  tenantId          String
+  doNumber          String
+  releaseOrderId    String
+  bookingId         String
+  containerId       String?
+  customerId        String
+  consigneeId       String?
+  notifyParty       String?
+  vessel            String?
+  voyage            String?
+  portOfLoading     String?
+  portOfDischarge   String?
+  deliveryDate      DateTime?
+  expiryDate        DateTime
+  deliveryType      String   @default("physical")
+  pickupLocation    String?
+  contactPerson     String?
+  contactPhone      String?
+  status            String   @default("draft") // draft, issued, confirmed, cancelled
+  physicalClearanceStatus String @default("pending") // pending, cleared, hold
+  customsClearanceStatus String @default("pending") // pending, cleared, hold
+  yardLocation      String?
+  specialInstructions String?
+  digitalSignature  String?
+  qrCode            String?
+  sha256Hash        String?  @unique
+  approvedBy        String?
+  approvedAt        DateTime?
+  issuedBy          String?
+  issuedAt          DateTime?
+  deliveryConfirmedAt DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  releaseOrder      ReleaseOrder @relation(fields: [releaseOrderId], references: [id], onDelete: Cascade)
+  booking           Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  customer          Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  items             DeliveryOrderItem[]
+
+  @@unique([tenantId, doNumber])
+  @@index([tenantId])
+  @@index([releaseOrderId])
+  @@index([status])
+}
+
+model DeliveryOrderItem {
+  id                String   @id @default(cuid())
+  deliveryOrderId   String
+  containerId       String
+  sealNumber        String?
+  packageCount      Int?
+  cargoDescription  String?
+  weight            Float?
+  createdAt         DateTime @default(now())
+
+  deliveryOrder     DeliveryOrder @relation(fields: [deliveryOrderId], references: [id], onDelete: Cascade)
+  container         Container @relation(fields: [containerId], references: [id], onDelete: Restrict)
+
+  @@index([deliveryOrderId])
+  @@index([containerId])
+}
+
+// ==========================================
+// 9. BILL OF LADING (B/L)
+// ==========================================
+
+// B/L number is inherited from Booking.bookingNumber with the ZENU SCAC prefix.
+// No independent B/L number generator is permitted.
+model BillOfLading {
+  id                String   @id @default(cuid())
+  tenantId          String
+  blNumber          String   @unique
+  scac              String   @default("ZENU")
+  bookingId         String?
+  shipmentId        String?
+  shipper           String
+  consignee         String
+  notifyParty       String?
+  vessel            String?
+  voyageNo          String?
+  portOfLoading     String
+  portOfDischarge   String
+  placeOfReceipt    String?
+  placeOfDelivery   String?
+  onwardInlandRouting String?
+  prepaid           Boolean   @default(false)
+  collect           Boolean   @default(false)
+  rate              Float?
+  unit              String?
+  currency          String   @default("USD")
+  placeOfIssue      String?
+  dateOfIssue       DateTime?
+  declaredValue     Float?
+  numberOfOriginals String?
+  signedForCarrier  String?
+  asAgent           String?
+  status            String   @default("draft") // draft, submitted, issued, amended, voided
+  amendmentCount    Int      @default(0)
+  amendmentFee      Float?
+  amendmentFeePaid  Boolean   @default(false)
+  version           Int      @default(1)
+  qrCode            String?
+  digitalSignature  String?
+  sha256Hash        String?  @unique
+  isVoid            Boolean   @default(false)
+  voidReason        String?
+  issuedAt          DateTime?
+  issuedBy          String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking           Booking? @relation(fields: [bookingId], references: [id])
+  shipment          Shipment? @relation(fields: [shipmentId], references: [id])
+  shippingLine      ShippingLine @relation(fields: [scac], references: [scac])
+  voyage            Voyage?  @relation(fields: [voyageNo], references: [voyageNumber])
+  items             BillOfLadingItem[]
+  revisions         BillOfLadingRevision[]
+  approvals         BillOfLadingApproval[]
+  attachments       BillOfLadingAttachment[]
+  amendmentFees     AmendmentFee[]
+
+  @@unique([tenantId, bookingId])
+  @@index([tenantId])
+  @@index([bookingId])
+  @@index([status])
+  @@index([amendmentCount])
+}
+
+model BillOfLadingItem {
+  id                String   @id @default(cuid())
+  billOfLadingId    String
+  containerNo       String
+  sealNo            String?
+  marksAndNumbers   String?
+  packages          Int?
+  description       String
+  weight            Float?
+  measurement       Float?
+  hsCode            String?
+  commodityType     String?
+  dangerousGoods    Boolean   @default(false)
+  imoClass          String?
+  unNumber          String?
+  createdAt         DateTime @default(now())
+
+  billOfLading      BillOfLading @relation(fields: [billOfLadingId], references: [id], onDelete: Cascade)
+  container         Container @relation(fields: [containerNo], references: [containerNumber])
+
+  @@index([billOfLadingId])
+  @@index([containerNo])
+}
+
+model BillOfLadingRevision {
+  id                String   @id @default(cuid())
+  billOfLadingId    String
+  revisionNumber    Int
+  changes           Json     // Track what changed
+  reason            String?
+  amendedBy         String?
+  amendedAt         DateTime @default(now())
+  createdAt         DateTime @default(now())
+
+  billOfLading      BillOfLading @relation(fields: [billOfLadingId], references: [id], onDelete: Cascade)
+
+  @@index([billOfLadingId])
+}
+
+model BillOfLadingApproval {
+  id                String   @id @default(cuid())
+  billOfLadingId    String
+  step              Int
+  approverId        String?
+  status            String   @default("pending")
+  comments          String?
+  approvedAt        DateTime?
+  createdAt         DateTime @default(now())
+
+  billOfLading      BillOfLading @relation(fields: [billOfLadingId], references: [id], onDelete: Cascade)
+  approver          User?    @relation("ApprovedBy", fields: [approverId], references: [id])
+
+  @@index([billOfLadingId])
+}
+
+model BillOfLadingAttachment {
+  id                String   @id @default(cuid())
+  billOfLadingId    String
+  fileName          String
+  fileUrl           String
+  fileType          String
+  uploadedBy        String?
+  uploadedAt        DateTime @default(now())
+  createdAt         DateTime @default(now())
+
+  billOfLading      BillOfLading @relation(fields: [billOfLadingId], references: [id], onDelete: Cascade)
+
+  @@index([billOfLadingId])
+}
+
+// ==========================================
+// 10. AMENDMENT FEE
+// ==========================================
+
+model AmendmentFee {
+  id                String   @id @default(cuid())
+  tenantId          String
+  billOfLadingId    String
+  amendmentNumber   Int
+  feeAmount         Float
+  currency          String   @default("USD")
+  status            String   @default("pending") // pending, invoiced, paid
+  invoiceId         String?
+  paidAt            DateTime?
+  createdAt         DateTime @default(now())
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  billOfLading      BillOfLading @relation(fields: [billOfLadingId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([billOfLadingId])
+  @@index([status])
+}
+
+// ==========================================
+// 11. YARD MANAGEMENT
+// ==========================================
+
+model YardSlot {
+  id                String   @id @default(cuid())
+  tenantId          String
+  block             String
+  bay               String
+  row               String
+  tier              String
+  status            String   @default("empty") // empty, occupied, reserved, maintenance
+  containerId       String?
+  assignedAt        DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  container         Container? @relation(fields: [containerId], references: [id])
+  movements         YardMovement[]
+
+  @@unique([tenantId, block, bay, row, tier])
+  @@index([tenantId])
+  @@index([status])
+}
+
+model YardMovement {
+  id                String   @id @default(cuid())
+  yardSlotId        String
+  containerId       String
+  fromSlot          String?
+  toSlot            String
+  movedBy           String?
+  movedAt           DateTime @default(now())
+  reason            String?
+  createdAt         DateTime @default(now())
+
+  yardSlot          YardSlot @relation(fields: [yardSlotId], references: [id], onDelete: Cascade)
+  container         Container @relation(fields: [containerId], references: [id], onDelete: Cascade)
+
+  @@index([yardSlotId])
+  @@index([containerId])
+}
+
+// ==========================================
+// 12. EDI & INTEGRATION
+// ==========================================
+
+model EDIIngestion {
+  id                String   @id @default(cuid())
+  tenantId          String
+  source            String   // maersk, msc, cma-cgm, etc.
+  type              String   // EDIFACT, JSON
+  payload           String   // Raw payload
+  parsedData        Json?
+  status            String   @default("pending") // pending, processed, error
+  md5Hash           String   @unique // Deduplication
+  processedAt       DateTime?
+  errors            String[]  // Error messages
+  createdAt         DateTime @default(now())
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  messages          EDIMessage[]
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+model EDIMessage {
+  id                String   @id @default(cuid())
+  ediIngestionId    String
+  messageType       String   // BAPLIE, IFTDDU, IFTMIN, etc.
+  messageId         String
+  data              Json
+  status            String   @default("pending")
+  createdAt         DateTime @default(now())
+
+  ediIngestion      EDIIngestion @relation(fields: [ediIngestionId], references: [id], onDelete: Cascade)
+
+  @@index([ediIngestionId])
+  @@index([messageType])
+}
+
+model IntegrationLog {
+  id                String   @id @default(cuid())
+  tenantId          String
+  source            String   // API, EDI, Manual, etc.
+  target            String   // Database, External API, etc.
+  request           Json?
+  response          Json?
+  status            String   // success, error, pending
+  timestamp         DateTime @default(now())
+  createdAt         DateTime @default(now())
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([timestamp])
+}
+
+// ==========================================
+// 13. FINANCE
+// ==========================================
+
+model Invoice {
+  id                String   @id @default(cuid())
+  tenantId          String
+  invoiceNumber     String
+  bookingId         String?
+  customerId        String
+  type              String   // freight, service, amendment, other
+  amount            Float
+  currency          String   @default("USD")
+  tax               Float    @default(0)
+  total             Float
+  status            String   @default("draft") // draft, sent, partial, paid, overdue, cancelled
+  dueDate           DateTime?
+  issuedAt          DateTime @default(now())
+  paidAt            DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  booking           Booking? @relation(fields: [bookingId], references: [id])
+  customer          Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  items             InvoiceItem[]
+  payments          Payment[]
+
+  @@unique([tenantId, invoiceNumber])
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([status])
+}
+
+model InvoiceItem {
+  id                String   @id @default(cuid())
+  invoiceId         String
+  description       String
+  quantity          Float
+  unitPrice         Float
+  total             Float
+  chargeType        String?  // freight, handling, storage, etc.
+  createdAt         DateTime @default(now())
+
+  invoice           Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}
+
+model Payment {
+  id                String   @id @default(cuid())
+  invoiceId         String
+  amount            Float
+  currency          String   @default("USD")
+  method            String   // bank_transfer, credit_card, cash, cheque
+  reference         String?
+  paidAt            DateTime @default(now())
+  status            String   @default("completed") // pending, completed, failed, cancelled
+  createdAt         DateTime @default(now())
+
+  invoice           Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@index([status])
+}
+
+model Charge {
+  id                String   @id @default(cuid())
+  tenantId          String
+  name              String
+  type              String   // freight, handling, storage, documentation, customs, etc.
+  amount            Float
+  currency          String   @default("USD")
+  isActive          Boolean   @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([type])
+}
+
+// ==========================================
+// 14. AUDIT & COMPLIANCE
+// ==========================================
+
+model AuditLog {
+  id                String   @id @default(cuid())
+  tenantId          String
+  entityType        String   // Booking, Container, BillOfLading, etc.
+  entityId          String
+  action            String   // create, update, delete, approve, issue
+  userId            String?
+  oldData           Json?    // Previous state
+  newData           Json?    // New state
+  ipAddress         String?
+  userAgent         String?
+  timestamp         DateTime @default(now())
+  reason            String?
+  createdAt         DateTime @default(now())
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user              User?    @relation(fields: [userId], references: [id])
+
+  @@index([tenantId])
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([timestamp])
+}
+
+model ComplianceCheck {
+  id                String   @id @default(cuid())
+  tenantId          String
+  entityType        String
+  entityId          String
+  checkType         String   // sanctions, customs, quality, safety
+  result            String   @default("passed") // passed, failed, pending, warning
+  details           Json?
+  checkedAt         DateTime
+  checkedBy         String?
+  createdAt         DateTime @default(now())
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([result])
+}
+
+model SanctionsScreening {
+  id                String   @id @default(cuid())
+  tenantId          String
+  customerId        String
+  screeningDate     DateTime @default(now())
+  result            String   @default("clear") // clear, match, review_needed
+  matches           Json?    // Matched records from sanctions lists
+  status            String   @default("pending") // pending, approved, rejected
+  createdAt         DateTime @default(now())
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer          Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([result])
+}
+
+// ==========================================
+// 15. WORKFLOW & RULES
+// ==========================================
+
+model Workflow {
+  id                String   @id @default(cuid())
+  tenantId          String
+  name              String
+  description       String?
+  steps             Json     // Workflow steps definition
+  isActive          Boolean   @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  instances         WorkflowInstance[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+model WorkflowInstance {
+  id                String   @id @default(cuid())
+  workflowId        String
+  entityType        String   // Booking, BillOfLading, etc.
+  entityId          String
+  currentStep       Int      @default(0)
+  status            String   @default("in_progress") // in_progress, completed, cancelled
+  data              Json?    // Workflow data
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  workflow          Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  booking           Booking? @relation(fields: [entityId], references: [id])
+  steps             WorkflowStep[]
+
+  @@index([workflowId])
+  @@index([entityType, entityId])
+  @@index([status])
+}
+
+model WorkflowStep {
+  id                String   @id @default(cuid())
+  workflowInstanceId String
+  stepName          String
+  status            String   @default("pending") // pending, in_progress, completed, skipped
+  assignedTo        String?
+  completedAt       DateTime?
+  comments          String?
+  createdAt         DateTime @default(now())
+
+  workflowInstance  WorkflowInstance @relation(fields: [workflowInstanceId], references: [id], onDelete: Cascade)
+  user              User?    @relation(fields: [assignedTo], references: [id])
+
+  @@index([workflowInstanceId])
+  @@index([status])
+}
+
+model BusinessRule {
+  id                String   @id @default(cuid())
+  tenantId          String
+  name              String
+  description       String?
+  condition         Json     // Rule condition logic
+  action            Json     // Action to execute
+  priority          Int      @default(100) // Lower number = higher priority
+  isActive          Boolean   @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  executions        RuleExecution[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+model RuleExecution {
+  id                String   @id @default(cuid())
+  ruleId            String
+  entityType        String
+  entityId          String
+  result            String   // matched, not_matched, error
+  executedAt        DateTime @default(now())
+  createdAt         DateTime @default(now())
+
+  rule              BusinessRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  booking           Booking? @relation(fields: [entityId], references: [id])
+
+  @@index([ruleId])
+  @@index([entityType, entityId])
+}
+
+// ==========================================
+// 16. NOTIFICATIONS
+// ==========================================
+
+model Notification {
+  id                String   @id @default(cuid())
+  userId            String
+  title             String
+  message           String
+  type              String   // info, warning, error, success
+  read              Boolean   @default(false)
+  data              Json?
+  createdAt         DateTime @default(now())
+
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([read])
+}
+
+model NotificationPreference {
+  id                String   @id @default(cuid())
+  userId            String
+  channel           String   // email, sms, in_app, push
+  enabled           Boolean   @default(true)
+  frequency         String   @default("immediate") // immediate, daily, weekly, none
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channel])
+  @@index([userId])
+}
+
+model NotificationTemplate {
+  id                String   @id @default(cuid())
+  tenantId          String
+  name              String
+  subject           String?
+  body              String
+  channel           String   // email, sms, in_app, push
+  variables         String[]  // Template variables: {{variable_name}}
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+// ==========================================
+// 17. DOCUMENTS
+// ==========================================
+
+model DocumentTemplate {
+  id                String   @id @default(cuid())
+  tenantId          String
+  name              String
+  type              String   // bol, ro, do, invoice, etc.
+  content           String   // Template HTML/Markdown
+  variables         String[]  // Template variables
+  isDefault         Boolean   @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([type])
+}
+
+model Document {
+  id                String   @id @default(cuid())
+  tenantId          String
+  documentNumber    String
+  type              String   // bol, ro, do, invoice, certificate
+  entityType        String   // Booking, BillOfLading, etc.
+  entityId          String
+  data              Json     // Document data
+  fileUrl           String?
+  sha256Hash        String?  @unique
+  qrCode            String?
+  version           Int      @default(1)
+  status            String   @default("draft") // draft, issued, voided, archived
+  generatedByUserId String?
+  generatedAt       DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  generatedBy       User?    @relation("GeneratedBy", fields: [generatedByUserId], references: [id])
+  verifications     DocumentVerification[]
+
+  @@unique([tenantId, documentNumber])
+  @@index([tenantId])
+  @@index([entityType, entityId])
+  @@index([status])
+}
+
+model DocumentVerification {
+  id                String   @id @default(cuid())
+  documentId        String
+  verifiedAt        DateTime @default(now())
+  verifiedByUserId  String?
+  result            String   // verified, not_verified, expired
+  ipAddress         String?
+  createdAt         DateTime @default(now())
+
+  document          Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  verifiedBy        User?    @relation("VerifiedBy", fields: [verifiedByUserId], references: [id])
+
+  @@index([documentId])
+}
