@@ -1,8 +1,0 @@
-Add this import to apps/api/src/app.ts:
-
-import { publicVerificationRouter } from "./routes/public-verification.js";
-
-Register the public route BEFORE the tenant-protected /api route:
-
-app.use("/verify", publicVerificationRouter);
-app.use("/api", tenantMiddleware, apiRouter);

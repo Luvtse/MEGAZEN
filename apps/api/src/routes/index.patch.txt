@@ -1,7 +1,0 @@
-Add imports:
-import { billOfLadingWorkflowRouter } from "./bill-of-lading-workflow.js";
-import { billOfLadingContainersRouter } from "./bill-of-lading-containers.js";
-
-Add:
-apiRouter.use("/bills-of-lading", billOfLadingWorkflowRouter);
-apiRouter.use("/bills-of-lading", billOfLadingContainersRouter);
